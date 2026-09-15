@@ -175,3 +175,30 @@ export async function readBackupZip(blob: Blob): Promise<ParsedBackup> {
   for (const entry of manifest.assets) assets.push({ ...entry, blob: await readBlob(entry.path) });
   return { manifest, documents, assets };
 }
+
+/** Import-friendly fallback for ordinary ZIPs that contain one or more .md files. */
+export async function readMarkdownZip(blob: Blob): Promise<ParsedBackup> {
+  const zip = await JSZip.loadAsync(blob);
+  const files = Object.values(zip.files).filter((file) => !file.dir && file.name.toLowerCase().endsWith('.md'));
+  if (!files.length) throw new Error('This ZIP contains no Markdown files and no MarkFlow manifest.');
+  const documents = await Promise.all(files.map(async (file, index) => {
+    const path = file.name.replaceAll('\\', '/');
+    const filename = path.split('/').pop() || `document-${index + 1}.md`;
+    const title = filename.replace(/\.md$/i, '') || `Imported document ${index + 1}`;
+    return {
+      sourceId: `external-${index + 1}`,
+      title,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      path,
+      snapshotPaths: [],
+      content: await file.async('text'),
+      snapshots: [],
+    };
+  }));
+  return {
+    manifest: { format: BACKUP_FORMAT, schema: BACKUP_SCHEMA, exportedAt: new Date().toISOString(), documents: documents.map(({ content: _content, snapshots: _snapshots, ...entry }) => entry), snapshots: [], assets: [] },
+    documents,
+    assets: [],
+  };
+}

@@ -1,3 +1,4 @@
+| P2 | Debounced autosave with durable recovery draft | Shipped, caveat | M4 | 650ms debounce; quota/storage errors show Retry save, persist the latest failed draft locally, and offer restore-or-recover-copy on the next load. |
 # MarkFlow Table Editing Feature Tracker
 
 Audit date: 2026-09-11
@@ -35,12 +36,12 @@ The current repository has many M3 and M4 features. It does not yet have a repea
 | Preview-only mode | Shipped | M3 | Stable mode exists; no live WYSIWYG/source overlay mode. |
 | Visual table editor | Shipped | M4 | Strongest part of the current product; the table-specific smoke coverage is broad. |
 | Semantic inline formatting | Shipped, caveat | M4 | Shared engine handles nested and partial Bold/Italic/Strike/Code, links, protected syntax; it is a custom Markdown subset, not a full CommonMark AST transform. |
-| Local document persistence | Shipped, caveat | M4 | Dexie/IndexedDB for documents, snapshots, and assets; versioned backup import/export now exists, but browser quota and offline recovery scenarios are not tested. |
-| Image attachments | Shipped, caveat | M3 | Paste/drop/upload and export work; document deletion now removes unreachable assets, but there is no visible asset manager or standard relative-path export. |
-| Export | Shipped, caveat | M3 | Markdown/ZIP, versioned backup ZIP, standalone HTML, and browser-print PDF exist; exports are not covered by automated artifact tests. |
+| Local document persistence | Shipped, caveat | M4 | Dexie/IndexedDB for documents, snapshots, and assets; versioned backup/import, storage health, retryable saves, and offline smoke validation now exist, but browser quota stress remains. |
+| Image attachments | Shipped | M3 | Paste/drop/upload, portable `assets/...` Markdown export, backup/import remapping, deletion cleanup, and the visible Assets manager are implemented; artifact and offline validation remain. |
+| Export | Shipped, caveat | M4 | Portable Markdown/ZIP, versioned backup ZIP, standalone HTML, and browser-print PDF exist; pure artifact tests cover Markdown ZIP, standalone HTML, and print HTML, but browser print itself is not automated. |
 | PWA/offline | Shipped, caveat | M2 | Manifest and Workbox service worker are configured; real offline and update behavior is not validated. |
-| Accessibility | Partial | M3 | Labels, roles, focusable controls, and keyboard paths exist; screen-reader, contrast, reduced-motion, and mobile keyboard audits are missing. |
-| Automated quality | Shipped, caveat | M3 | `npm test` now runs 12 pure Vitest contracts for formatting and tables; the browser suite is still a large script, there is no CI matrix, and Playwright requires Node 20+. |
+| Accessibility | Shipped, caveat | M3 | Labels, menu/tab/status semantics, visible keyboard focus, reduced-motion support, key contrast checks, and mobile shell checks exist; screen-reader, full contrast, keyboard-only, and touch workflow audits remain. |
+| Automated quality | Shipped, caveat | M4 | `npm test` runs 31 pure contracts and CI runs typecheck/tests/build plus Chromium/Firefox/WebKit and mobile smoke suites on Node 20; broader device/browser coverage remains. |
 
 ## Table Model And Markdown Contract
 
@@ -149,36 +150,37 @@ The old tracker described full guide lines, edge bands, delays, and data-cell zo
 | ID | Requirement | Status | Maturity | Current implementation / next proof |
 |---|---|---|---:|---|
 | P1 | IndexedDB documents | Shipped | M4 | Dexie stores docs, snapshots, and assets. |
-| P2 | Debounced autosave | Shipped | M3 | 650ms debounce; save failures are not surfaced with a retry queue. |
+| P2 | Debounced autosave with multi-document durable recovery | Shipped, caveat | M4 | 650ms debounce; quota/storage errors show Retry save, persist one latest failed draft per document locally, and offer restore or recovered-copy creation on the next load. Quota stress remains. |
 | P3 | Named snapshots | Shipped | M3 | Ctrl/Cmd+S opens a label dialog. |
-| P4 | Automatic snapshots | Shipped, caveat | M3 | Quiet three-minute snapshots, newest 40 retained; timer behavior is not tested across tab suspension. |
+| P4 | Automatic snapshots | Shipped, caveat | M3 | Checks every three minutes but snapshots only when content changed since load or the last snapshot; opening an idle document creates none; newest 40 retained; timer behavior is not tested across tab suspension. |
 | P5 | Restore safety snapshot | Shipped | M3 | `pre-restore` snapshot is created before restore. |
 | P6 | Backup all documents, snapshots, and assets | Shipped | M4 | Versioned manifest ZIP includes document metadata, snapshot content, and referenced attachment blobs. |
-| P7 | Backup import and ID-safe restore | Shipped, caveat | M3 | Import creates new document/asset IDs, rewrites attachment references, restores snapshots, and reports missing references; standard standalone Markdown paths remain a separate export concern. |
-| P8 | Orphan asset garbage collection | Partial | M2 | Deleting a document removes assets unreachable from remaining documents and snapshots; no visible orphan scan/cleanup manager exists yet. |
+| P7 | Backup import and ID-safe restore | Shipped, caveat | M3 | Import creates new document/asset IDs, rewrites attachment references, restores snapshots, and reports missing references; conflict policy is duplicate-as-new. |
+| P8 | Orphan asset garbage collection and manager | Shipped, caveat | M3 | Deletion cleanup and a visible Assets manager are implemented; cleanup is user-triggered for current orphans and storage/offline validation remains. |
 | P9 | Standalone HTML export | Shipped | M3 | Preview HTML and image blobs are embedded. |
 | P10 | PDF export | Shipped, caveat | M3 | Browser print pipeline, selectable text, three themes; it requires a popup and user Save-as-PDF action. |
-| P11 | Markdown export | Shipped | M3 | Direct `.md` when no attachments; ZIP when attachments exist. |
+| P11 | Portable Markdown export | Shipped, caveat | M4 | Attachment-bearing ZIPs rewrite references to standard `assets/...` paths; pure artifact tests cover the ZIP, while missing blobs and browser rendering remain caveats. |
 | P12 | Settings persistence | Shipped | M3 | Theme, mode, sidebar, inline HTML, and single-newline behavior in localStorage. |
-| P13 | PWA installability | Shipped, caveat | M2 | Manifest/service worker configured; installability and update behavior need browser matrix tests. |
-| P14 | Real offline editing | Risk | M1 | Architecture supports it, but no offline network-drop test proves boot, save, render, and asset access. |
-| P15 | Import backup package | Shipped, caveat | M3 | Visible Import action validates the manifest and restores documents, snapshots, and assets; conflict policy is duplicate-as-new rather than merge. |
+| P13 | PWA lifecycle/installability | Shipped, caveat | M3 | Manifest/service worker configured; top-bar lifecycle status reports cache readiness, updating, updated, or unavailable; installability/update browser matrix remains. |
+| P14 | Real offline editing | Shipped, caveat | M3 | CI workflow is configured to verify service-worker readiness, offline reload, cached app boot, IndexedDB content recovery, and Offline status; the configured matrix has not run in the current Node 18 environment and update/failure testing remains. |
+| P15 | Import backup package | Shipped, caveat | M3 | Library Tools > Import accepts MarkFlow manifest ZIPs and ordinary ZIPs containing `.md` files; MarkFlow packages restore snapshots/assets, while generic Markdown ZIPs import documents only; corrupt or unsupported ZIPs are rejected. |
 | P16 | File System Access / folder sync | Planned | M0 | Future optional adapter; do not make it a core dependency. |
+| P17 | Storage health and persistence report | Shipped, caveat | M4 | Library Tools reports document/snapshot/asset counts, browser quota estimate when available, persistent-storage state, connectivity, and pending-save state; pure IndexedDB health contracts pass, while quota enforcement remains browser-dependent. Users can explicitly request persistent storage where supported. |
 
 ## Accessibility, Mobile, Performance, And Quality
 
 | ID | Requirement | Status | Maturity | Current implementation / next proof |
 |---|---|---|---:|---|
-| Q1 | Labels and roles | Shipped | M3 | Buttons, dialogs, table controls, and mode tabs have labels/roles. |
+| Q1 | Labels and roles | Shipped | M3 | Buttons, dialogs, table controls, menus, live status regions, and mode tabs expose semantics. |
 | Q2 | Keyboard access | Shipped, caveat | M3 | Main shortcuts and table navigation exist; complete focus-order and screen-reader review is missing. |
-| Q3 | Reduced motion | Missing | M0 | No explicit `prefers-reduced-motion` policy. |
-| Q4 | Contrast validation | Risk | M1 | Dark/light tokens exist; no automated or manual WCAG evidence is recorded. |
-| Q5 | Responsive layout | Partial | M2 | Sidebar and panes adapt at narrow widths; table editor touch usability is unproven. |
+| Q3 | Reduced motion | Shipped, caveat | M2 | Global `prefers-reduced-motion` rules suppress long transitions/animations; visual audit remains. |
+| Q4 | Contrast validation | Shipped, caveat | M2 | Browser smoke checks key light-theme text against AA contrast; full WCAG/manual dark-theme and component audit remains. |
+| Q5 | Responsive layout | Shipped, caveat | M3 | Mobile smoke checks no document overflow and primary controls; full touch table workflow remains unproven. |
 | Q6 | 1 MB document performance budget | Missing | M0 | Plan states 60fps as a principle but no benchmark exists. |
 | Q7 | Large table performance | Risk | M1 | Virtualization is intentionally deferred; measure realistic row/column limits before promising scale. |
-| Q8 | CI test command | Missing | M0 | `npm test` exists locally; add a Node 20+ CI matrix and a deterministic static-server fixture. |
-| Q9 | Pure parser unit tests | Shipped, caveat | M3 | 12 Vitest contracts cover the inline formatter and table parser/serializer; expand with property-based and malformed-input cases. |
-| Q10 | Export artifact tests | Missing | M0 | Test ZIP contents, HTML asset embedding, Markdown paths, and print HTML generation. |
+| Q8 | CI test command | Shipped, caveat | M4 | GitHub Actions is configured to run TypeScript, pure tests, production build, and Chromium/Firefox/WebKit plus mobile smoke suites on Node 20; this is configured evidence, not a locally observed CI pass. |
+| Q9 | Pure parser unit tests | Shipped, caveat | M4 | 25 Vitest contracts cover formatting, tables, attachment paths, backup packages, export artifacts, generic ZIP import, malformed inputs, and property-based round trips; browser compatibility remains. |
+| Q10 | Export artifact tests | Shipped, caveat | M3 | Pure tests cover portable Markdown ZIP contents, HTML escaping/styles, and print HTML generation; browser print and full asset-render artifacts remain. |
 
 ## Corrected Round History
 
@@ -195,9 +197,15 @@ The historical round labels remain useful as change history, but they are not cu
 
 Priority order is based on trust and differentiation, not feature count:
 
-1. Add property-based and malformed-input fixtures for the inline formatter and table parser.
-2. Add standard relative attachment path export and a visible orphan-asset scan/cleanup manager.
+1. Add the Source Diff Before Apply preview for table and multi-cell formatting changes.
+2. Add one-click safe Markdown Confidence repairs backed by that source diff.
 3. Add offline network-drop, service-worker update, browser quota, and failed-save tests.
-4. Add a table source-diff preview and a safe Markdown-normalization command.
-5. Add mobile/touch insertion and selection behavior before adding more desktop-only table features.
-6. Add the differentiated “Markdown Confidence” diagnostics and platform-render comparison described in the product plan.
+4. Add mobile/touch insertion and selection behavior before adding more desktop-only table features.
+5. Add the portable document package improvements and platform-render comparison described in the product plan.
+
+## Horizon 1: Markdown Confidence
+
+| ID | Requirement | Status | Maturity | Current implementation / next proof |
+|---|---|---|---:|---|
+| C1 | Confidence diagnostics panel | Shipped, caveat | M3 | Read-only local analyzer reports broken links, missing attachments, malformed tables, unclosed inline marks/code, heading hierarchy and duplicate-anchor warnings, raw HTML, and Mermaid/local-attachment portability warnings. It reports line/column locations; remote URLs are intentionally not fetched. |
+| C2 | One-click safe fixes with source diff | Planned | M1 | Follows the Source Diff Before Apply slice; no automatic repair is offered by the current panel. |

@@ -7,16 +7,17 @@ import { Prec, StateEffect } from '@codemirror/state';
 import { createEditor, setEditorText } from './editor';
 import { createRenderer, postRender } from './core/renderer';
 import {
-  db, listDocs, createDoc, saveDoc, deleteDoc, duplicateDoc,
-  addSnapshot, listSnapshots, type Doc,
+  listDocs, createDoc, saveDoc, deleteDoc, duplicateDoc, deleteAssets, listOrphanAssets,
+  addSnapshot, listSnapshots, getStorageHealth, requestPersistentStorage, getAsset, type Doc,
 } from './core/storage';
 import { toast, openModal, formDialog, confirmDialog, popMenu, debounce, timeAgo, countWords } from './ui';
 import { settings, saveSettings, type ViewMode, type ThemeName } from './state';
 import { buildToolbar, toggleInline, insertLink, refreshToolbarContext } from './toolbar';
 import { renderDocList } from './library';
-import { installImageHandlers, attachmentIds } from './core/images';
+import { installImageHandlers, attachmentIds, releaseAssetUrls } from './core/images';
 import { installTablePaste } from './core/clipboard';
 import { findAllTables } from './core/tables';
+import { analyzeMarkdown, type MarkdownDiagnostic } from './core/diagnostics';
 import { openTableEditorByIndex } from './tableEditor';
 import {
   exportMarkdown, exportBackupZip, exportStandaloneHtml,
@@ -24,6 +25,8 @@ import {
   type PrintTheme,
 } from './exporter';
 import { WELCOME_MD } from './welcome';
+import { parsePendingSaves, removePendingSave, serializePendingSaves, upsertPendingSave, type PendingSaveDraft } from './core/saveRecovery';
+import { installPwaLifecycle } from './core/pwa';
 
 // ---------------- state ----------------
 
@@ -32,6 +35,9 @@ const app = $('#app');
 const preview = $('#preview');
 const saveStateEl = $('#saveState');
 const titleInput = $('#docTitle') as HTMLInputElement;
+const saveRetryBtn = $('#saveRetryBtn') as HTMLButtonElement;
+const connectivityStatus = $('#connectivityStatus');
+const pwaStatus = $('#pwaStatus');
 
 const md = createRenderer();
 
@@ -150,28 +156,146 @@ const saveState = {
   },
 };
 
-const debouncedSave = debounce(async () => {
+let saveRetryPending = false;
+let snapshotFailureNotified = false;
+const PENDING_SAVE_KEY = 'mf-pending-saves';
+
+function readPendingSaves(): PendingSaveDraft[] {
+  try {
+    return parsePendingSaves(localStorage.getItem(PENDING_SAVE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function writePendingSave(): void {
+  if (!currentDoc) return;
+  try {
+    const draft: PendingSaveDraft = {
+      docId: currentDoc.id,
+      title: titleInput.value.trim() || 'Untitled',
+      content: currentText,
+      savedAt: Date.now(),
+    };
+    localStorage.setItem(PENDING_SAVE_KEY, serializePendingSaves(upsertPendingSave(readPendingSaves(), draft)));
+  } catch {
+    // The visible save error still protects the current editor session when
+    // localStorage is unavailable or full.
+  }
+}
+
+function clearPendingSave(docId = currentDoc?.id): void {
+  if (!docId) return;
+  try {
+    const next = removePendingSave(readPendingSaves(), docId);
+    if (next.length) localStorage.setItem(PENDING_SAVE_KEY, serializePendingSaves(next));
+    else localStorage.removeItem(PENDING_SAVE_KEY);
+  } catch { /* storage may be unavailable */ }
+}
+
+function describeSaveError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return /quota|storage|space|full/i.test(message) || (error instanceof DOMException && error.name === 'QuotaExceededError')
+    ? 'Storage full — free browser space, then retry'
+    : 'Save failed — retry';
+}
+
+async function persistCurrentDoc(): Promise<void> {
   if (!currentDoc) return;
   currentDoc.content = currentText;
   currentDoc.title = titleInput.value.trim() || 'Untitled';
-  await saveDoc(currentDoc);
-  saveState.set('Saved ✓');
-  refreshDocList();
-}, 650);
+  try {
+    await saveDoc(currentDoc);
+    saveRetryPending = false;
+    clearPendingSave();
+    saveRetryBtn.hidden = true;
+    saveState.set('Saved ✓');
+    refreshDocList();
+  } catch (error) {
+    saveRetryPending = true;
+    writePendingSave();
+    saveRetryBtn.hidden = false;
+    saveState.set(describeSaveError(error), true);
+    toast(`${describeSaveError(error)}. Your current text remains in the editor.`, 'err', 5200);
+  }
+}
 
-async function takeSnapshot(label: string): Promise<void> {
+
+async function offerPendingSaveRecovery(): Promise<void> {
+  const draft = readPendingSaves().find((item) => item.docId === currentDoc?.id)
+    ?? readPendingSaves()[0];
+  if (!draft || !currentDoc) return;
+  if (draft.docId === currentDoc.id && draft.content === currentText) {
+    clearPendingSave();
+    return;
+  }
+  const body = document.createElement('p');
+  body.className = 'muted-note';
+  body.textContent = draft.docId === currentDoc.id
+    ? `MarkFlow found unsaved changes for “${draft.title}” from ${new Date(draft.savedAt).toLocaleString()}. Restore them into the current document?`
+    : `MarkFlow found unsaved changes for “${draft.title}” from ${new Date(draft.savedAt).toLocaleString()}. Create a recovered copy?`;
+  const keep = document.createElement('button');
+  keep.type = 'button';
+  keep.className = 'btn ghost';
+  keep.textContent = 'Keep current';
+  const restore = document.createElement('button');
+  restore.type = 'button';
+  restore.className = 'btn primary';
+  restore.textContent = draft.docId === currentDoc.id ? 'Restore changes' : 'Create recovered copy';
+  const handle = openModal({ title: 'Unsaved changes found', body, foot: [keep, restore] });
+  keep.addEventListener('click', () => { clearPendingSave(); handle.close(); });
+  restore.addEventListener('click', async () => {
+    clearPendingSave();
+    if (draft.docId === currentDoc!.id) {
+      await loadDoc({ ...currentDoc!, content: draft.content, title: draft.title });
+      await persistCurrentDoc();
+    } else {
+      const recovered = await createDoc(`${draft.title} (Recovered)`, draft.content);
+      docs = await listDocs();
+      await loadDoc(recovered);
+    }
+    handle.close();
+    toast('Unsaved changes restored.', 'ok');
+  });
+}
+const debouncedSave = debounce(() => { void persistCurrentDoc(); }, 650);
+
+function updateConnectivity(): void {
+  const offline = !navigator.onLine;
+  connectivityStatus.textContent = offline ? 'Offline — local only' : '';
+  connectivityStatus.classList.toggle('offline', offline);
+  connectivityStatus.title = offline ? 'The network is unavailable. MarkFlow continues using local storage.' : '';
+  if (!offline && saveRetryPending) void persistCurrentDoc();
+}
+
+function updatePwaStatus(message: string): void {
+  pwaStatus.textContent = message;
+  pwaStatus.classList.toggle('warning', /unavailable|failed/i.test(message));
+}
+
+async function takeSnapshot(label: string, notify = true): Promise<void> {
   if (!currentDoc) return;
-  if (currentText === lastSnapshotText) { toast('Nothing new to snapshot.', 'info'); return; }
-  await addSnapshot(currentDoc.id, label, currentText, countWords(currentText));
-  lastSnapshotText = currentText;
-  toast(`Snapshot “${label}” pinned to history.`, 'ok');
+  if (currentText === lastSnapshotText) {
+    if (notify) toast('Nothing new to snapshot.', 'info');
+    return;
+  }
+  try {
+    await addSnapshot(currentDoc.id, label, currentText, countWords(currentText));
+    lastSnapshotText = currentText;
+    snapshotFailureNotified = false;
+    if (notify) toast(`Snapshot “${label}” pinned to history.`, 'ok');
+  } catch (error) {
+    if (notify || !snapshotFailureNotified) {
+      toast(`Could not save snapshot: ${describeSaveError(error)}.`, 'err', 5200);
+      snapshotFailureNotified = true;
+    }
+  }
 }
 
 // every 3 minutes: quiet auto-snapshot when content changed
 setInterval(() => {
   if (currentDoc && currentText !== lastSnapshotText && currentText.trim()) {
-    void addSnapshot(currentDoc.id, 'auto', currentText, countWords(currentText));
-    lastSnapshotText = currentText;
+    void takeSnapshot('auto', false);
   }
 }, 3 * 60 * 1000);
 
@@ -180,13 +304,17 @@ setInterval(() => {
 async function loadDoc(doc: Doc): Promise<void> {
   currentDoc = doc;
   currentText = doc.content;
-  lastSnapshotText = null;
+  lastSnapshotText = currentText;
+  snapshotFailureNotified = false;
+  saveRetryPending = false;
+  saveRetryBtn.hidden = true;
   titleInput.value = doc.title;
   setEditorText(view, currentText);
   saveState.set('Saved ✓');
   refreshDocList();
   await renderPreview();
   view.focus();
+  void offerPendingSaveRecovery();
 }
 
 async function createAndLoad(): Promise<void> {
@@ -278,6 +406,168 @@ function openHistory(): void {
   });
 }
 
+function openAssetManager(): void {
+  void listOrphanAssets(currentText ? [currentText] : []).then((assets) => {
+    const body = document.createElement('div');
+    if (!assets.length) {
+      const note = document.createElement('p');
+      note.className = 'muted-note';
+      note.textContent = 'No orphaned attachments. Every stored image is referenced by a document or snapshot.';
+      body.appendChild(note);
+    } else {
+      const note = document.createElement('p');
+      note.className = 'muted-note';
+      note.textContent = `${assets.length} stored attachment${assets.length === 1 ? '' : 's'} are not referenced by the current documents or snapshots.`;
+      body.appendChild(note);
+      const list = document.createElement('div');
+      for (const asset of assets) {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        const meta = document.createElement('div');
+        meta.className = 'hi-meta';
+        const label = document.createElement('div');
+        label.className = 'hi-label';
+        label.textContent = asset.name;
+        const time = document.createElement('div');
+        time.className = 'hi-time';
+        time.textContent = `${asset.type || 'unknown'} · ${Math.ceil(asset.blob.size / 1024)} KB · ${timeAgo(asset.ts)}`;
+        meta.append(label, time);
+        item.appendChild(meta);
+        list.appendChild(item);
+      }
+      body.appendChild(list);
+    }
+    const cleanup = document.createElement('button');
+    cleanup.type = 'button';
+    cleanup.className = 'btn danger';
+    cleanup.textContent = assets.length ? `Delete ${assets.length} orphan${assets.length === 1 ? '' : 's'}` : 'No cleanup needed';
+    cleanup.disabled = !assets.length;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn ghost';
+    close.textContent = 'Close';
+    const handle = openModal({ title: 'Attachment storage', body, foot: [close, cleanup] });
+    close.addEventListener('click', handle.close);
+    cleanup.addEventListener('click', async () => {
+      const ok = await confirmDialog('Delete orphaned attachments', `Delete ${assets.length} attachment${assets.length === 1 ? '' : 's'} that no document or snapshot references? This cannot be undone.`, 'Delete');
+      if (!ok) return;
+      await deleteAssets(assets.map((asset) => asset.id));
+      releaseAssetUrls();
+      handle.close();
+      toast(`Deleted ${assets.length} orphaned attachment${assets.length === 1 ? '' : 's'}.`, 'ok');
+    });
+  }).catch(() => toast('Could not inspect attachment storage.', 'err'));
+}
+
+function formatBytes(value?: number): string {
+  if (value === undefined) return 'Unavailable';
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function openStorageHealth(): void {
+  void getStorageHealth().then((health) => {
+    const body = document.createElement('div');
+    const grid = document.createElement('div');
+    grid.className = 'storage-health-grid';
+    const rows: [string, string][] = [
+      ['Documents', health.documents.toLocaleString()],
+      ['Snapshots', health.snapshots.toLocaleString()],
+      ['Stored attachments', health.assets.toLocaleString()],
+      ['Estimated usage', formatBytes(health.usage)],
+      ['Estimated quota', formatBytes(health.quota)],
+      ['Persistent storage', health.persistent === undefined ? 'Unavailable' : health.persistent ? 'Granted' : 'Not granted'],
+      ['Connection', navigator.onLine ? 'Online' : 'Offline — local editing continues'],
+      ['Save state', saveRetryPending ? 'Retry needed' : 'No pending save error'],
+    ];
+    for (const [label, value] of rows) {
+      const key = document.createElement('span');
+      key.className = 'storage-health-label';
+      key.textContent = label;
+      const val = document.createElement('strong');
+      val.textContent = value;
+      grid.append(key, val);
+    }
+    body.appendChild(grid);
+    const note = document.createElement('p');
+    note.className = 'muted-note';
+    note.textContent = 'Browser storage limits vary by device and browser. MarkFlow does not impose a fixed document-count limit.';
+    body.appendChild(note);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn ghost';
+    close.textContent = 'Close';
+    const foot = [close];
+    if (health.persistenceAvailable && !health.persistent) {
+      const persist = document.createElement('button');
+      persist.type = 'button';
+      persist.className = 'btn primary';
+      persist.textContent = 'Protect local storage';
+      persist.title = 'Ask the browser to keep MarkFlow data during storage pressure';
+      persist.addEventListener('click', async () => {
+        const granted = await requestPersistentStorage();
+        handle.close();
+        toast(granted ? 'Persistent storage granted by the browser.' : 'The browser did not grant persistent storage.', granted ? 'ok' : 'info', 4200);
+      });
+      foot.push(persist);
+    }
+    const handle = openModal({ title: 'Local storage health', body, foot });
+    close.addEventListener('click', handle.close);
+  }).catch(() => toast('Could not inspect local storage.', 'err'));
+}
+
+function diagnosticLabel(diagnostic: MarkdownDiagnostic): string {
+  return diagnostic.kind.replace(/-/g, ' ');
+}
+
+async function openConfidencePanel(): Promise<void> {
+  const references = attachmentIds(currentText);
+  const available = new Set<string>();
+  await Promise.all(references.map(async (id) => {
+    if (await getAsset(id)) available.add(id);
+  }));
+  const diagnostics = analyzeMarkdown(currentText, { availableAttachments: available });
+  const body = document.createElement('div');
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error').length;
+  const warnings = diagnostics.length - errors;
+  const summary = document.createElement('p');
+  summary.className = 'confidence-summary';
+  summary.textContent = diagnostics.length
+    ? `${errors} error${errors === 1 ? '' : 's'} · ${warnings} warning${warnings === 1 ? '' : 's'}`
+    : 'No structural or portability concerns found.';
+  body.appendChild(summary);
+  const note = document.createElement('p');
+  note.className = 'muted-note';
+  note.textContent = 'Checks are local and structural; remote URLs are not fetched.';
+  body.appendChild(note);
+  if (diagnostics.length) {
+    const list = document.createElement('div');
+    list.className = 'confidence-list';
+    for (const diagnostic of diagnostics) {
+      const item = document.createElement('div');
+      item.className = `confidence-item ${diagnostic.severity}`;
+      const heading = document.createElement('div');
+      heading.className = 'confidence-item-head';
+      const label = document.createElement('strong');
+      label.textContent = diagnosticLabel(diagnostic);
+      const location = document.createElement('span');
+      location.textContent = `Line ${diagnostic.line}, column ${diagnostic.column}`;
+      heading.append(label, location);
+      const message = document.createElement('p');
+      message.textContent = diagnostic.message;
+      item.append(heading, message);
+      list.appendChild(item);
+    }
+    body.appendChild(list);
+  }
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'btn ghost';
+  close.textContent = 'Close';
+  const handle = openModal({ title: 'Markdown Confidence', body, foot: [close], wide: true });
+  close.addEventListener('click', handle.close);
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
 }
@@ -335,7 +625,9 @@ function setMode(mode: ViewMode): void {
   settings.mode = mode;
   app.dataset.mode = mode;
   document.querySelectorAll('.mode-switch button').forEach((b) => {
-    b.classList.toggle('active', (b as HTMLElement).dataset.mode === mode);
+    const active = (b as HTMLElement).dataset.mode === mode;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', String(active));
   });
   saveSettings();
   if (mode !== 'source') void renderPreview();
@@ -358,14 +650,15 @@ function wireTopBar(): void {
     saveSettings();
   });
   titleInput.addEventListener('input', () => { saveState.set('Editing…', true); debouncedSave(); });
+  saveRetryBtn.addEventListener('click', () => { saveRetryBtn.disabled = true; void persistCurrentDoc().finally(() => { saveRetryBtn.disabled = false; }); });
+  window.addEventListener('online', updateConnectivity);
+  window.addEventListener('offline', updateConnectivity);
+  updateConnectivity();
+  installPwaLifecycle(({ message }) => updatePwaStatus(message));
   $('#newDocBtn').addEventListener('click', () => { void createAndLoad(); });
   $('#docSearch').addEventListener('input', refreshDocList);
-  $('#historyBtn').addEventListener('click', openHistory);
-  $('#downloadAllBtn').addEventListener('click', async () => {
-    await exportBackupZip(await listDocs());
-  });
   const backupInput = $('#backupFileInput') as HTMLInputElement;
-  $('#importBackupBtn').addEventListener('click', () => backupInput.click());
+  const importBackup = () => backupInput.click();
   backupInput.addEventListener('change', async () => {
     const file = backupInput.files?.[0];
     backupInput.value = '';
@@ -379,7 +672,18 @@ function wireTopBar(): void {
       toast(err instanceof Error ? err.message : 'Could not import this backup.', 'err', 5200);
     }
   });
+  const libraryToolsBtn = $('#libraryToolsBtn');
+  libraryToolsBtn.addEventListener('click', () => {
+    popMenu(libraryToolsBtn, [
+      { label: 'Version history', onClick: openHistory },
+      { label: 'Backup all documents', onClick: async () => { await exportBackupZip(await listDocs()); } },
+      { label: 'Import Markdown or MarkFlow ZIP', onClick: importBackup },
+      { label: 'Review attachment storage', onClick: openAssetManager },
+      { label: 'Local storage health', onClick: openStorageHealth },
+    ], 'Documents are stored locally in IndexedDB.', 'up');
+  });
   $('#shortcutsBtn').addEventListener('click', openShortcuts);
+  $('#confidenceBtn').addEventListener('click', () => { void openConfidencePanel(); });
 
   $('#exportBtn').addEventListener('click', (e) => {
     const btn = e.currentTarget as HTMLElement;
@@ -405,7 +709,9 @@ async function boot(): Promise<void> {
   app.dataset.mode = settings.mode;
   $('#sidebar').classList.toggle('hidden', !settings.sidebarOpen);
   document.querySelectorAll('.mode-switch button').forEach((b) => {
-    b.classList.toggle('active', (b as HTMLElement).dataset.mode === settings.mode);
+    const active = (b as HTMLElement).dataset.mode === settings.mode;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', String(active));
   });
 
   docs = await listDocs();

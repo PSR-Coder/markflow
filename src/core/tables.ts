@@ -148,7 +148,10 @@ export function serializeTable(rows: string[][], aligns: Align[]): string {
   }
   const pad = (s: string, w: number) => s + ' '.repeat(Math.max(0, w - visualLen(s)));
   const sepCell = (align: Align, w: number): string => {
-    const dashes = '-'.repeat(Math.max(1, w - (align === 'center' ? 2 : align === '' ? 0 : 1)));
+    // CommonMark/GFM table separators require at least three dashes, including
+    // aligned columns whose content width is too narrow to leave three after
+    // their colon markers.
+    const dashes = '-'.repeat(Math.max(3, w - (align === 'center' ? 2 : align === '' ? 0 : 1)));
     if (align === 'center') return ':' + dashes + ':';
     if (align === 'left') return ':' + dashes;
     if (align === 'right') return dashes + ':';

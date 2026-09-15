@@ -126,7 +126,7 @@ Implemented in `src/core/storage.ts`, `src/library.ts`, and `src/main.ts`:
 - debounced document autosave
 - document create, select, rename, duplicate, delete, and search
 - named snapshots through Ctrl/Cmd+S
-- quiet three-minute auto-snapshots
+- quiet three-minute auto-snapshots only when content has changed since load or the previous snapshot
 - newest-40 snapshot retention per document
 - pre-restore safety snapshot
 - restore and snapshot download
@@ -134,10 +134,10 @@ Implemented in `src/core/storage.ts`, `src/library.ts`, and `src/main.ts`:
 
 Important limitations:
 
-- browser quota and storage failure are not surfaced through a recovery workflow
-- versioned backup import/restore now exists, but it restores as duplicate-as-new rather than merging conflicts
-- deleting a document now removes assets unreachable from remaining documents and snapshots, but there is no visible orphan scan/cleanup manager
-- attachment IDs are MarkFlow-specific and are not rewritten into portable relative paths on Markdown export
+- browser quota/storage failures now show a retryable save state; Library Tools reports counts, quota estimates, persistent-storage state, connectivity, and pending-save state, with an explicit protection request where supported
+- versioned backup import/restore now exists as duplicate-as-new, and ordinary ZIPs containing `.md` files can import as documents without snapshot/asset metadata
+- deleting a document now removes assets unreachable from remaining documents and snapshots; the Assets manager can inspect and delete remaining orphans
+- attachment-bearing Markdown ZIP exports now rewrite known references to standard `assets/...` paths; missing blobs remain visible and standalone artifact tests are still needed
 - “unlimited documents” is constrained by browser storage quota
 
 ### Images and export
@@ -157,8 +157,7 @@ Implemented in `src/core/images.ts` and `src/exporter.ts`:
 Limitations:
 
 - no visual image resize handles
-- no attachment manager or orphan cleanup
-- versioned backup import now exists, but ZIP Markdown references still require a README explanation rather than being directly portable to another Markdown tool
+- backup import exists and portable Markdown ZIP references now use `assets/...`; artifact verification and offline scenarios remain
 - PDF is a print workflow, not a generated file artifact that can be automatically inspected in tests
 
 ### PWA, settings, and quality
@@ -175,16 +174,15 @@ Implemented or configured:
 
 Validation gaps:
 
-- no repeatable `npm test` command
 - the browser suite is a large script rather than a structured test runner
-- no CI matrix
-- no offline network-drop test
-- no screen-reader audit
-- no WCAG contrast report
-- no reduced-motion policy
+- CI runs TypeScript, pure tests, production build, and Chromium/Firefox/WebKit plus mobile smoke suites on Node 20; broader device/browser coverage remains
+- the CI smoke suite now verifies service-worker readiness, offline reload, cached app boot, IndexedDB content recovery, and the Offline local-only status; the top bar reports cache readiness, updating, updated, or unavailable states; broader browser/update failure matrices remain
+- no manual screen-reader audit
+- no full WCAG contrast report; key light-theme contrast is checked in browser smoke
+- reduced-motion CSS support now exists; no visual audit has been performed
 - no measured 1 MB document or large-table performance budget
-- no mobile/touch interaction test suite
-- no export artifact fixture tests
+- mobile shell smoke exists; no full touch table interaction suite
+- export artifact fixtures now cover portable Markdown ZIP, standalone HTML, and generated print HTML; browser print and rendered-asset artifacts remain untested
 
 ### Horizon 0 progress: parser and table contracts
 
@@ -195,7 +193,29 @@ The first trust-hardening tranche is now implemented:
 - `test/tables.test.ts` covers escaped pipes, fenced-code exclusion, alignment parsing, padded serialization, ragged rows, single-column tables, and header-only tables.
 - The parser preserves fenced code blocks as opaque source ranges instead of treating their fences as inline code.
 
-Current evidence is still M3/M4 rather than M5: there is no property-based suite, CI matrix, browser compatibility matrix, or export artifact test suite yet.
+Current evidence is still M3/M4 rather than M5: browser compatibility, mobile, and failure-mode matrices remain open.
+
+The deterministic artifact and CI tranche is now also implemented:
+
+- `test/exportArtifacts.test.ts` verifies portable Markdown ZIP entries, relative attachment paths, standalone HTML escaping/styles, and print HTML generation.
+- `test/backup.test.ts` also verifies ordinary ZIP import for multiple `.md` files.
+- `.github/workflows/ci.yml` runs `tsc`, `npm test`, and `npm run build` on Node 20.
+- Node 20 is scoped to CI; the project does not declare a runtime engine change and local development remains unchanged.
+
+### Horizon 0 progress: save reliability
+
+Autosave now has a visible failure path:
+
+- IndexedDB save failures remain in the editor instead of becoming unhandled promise rejections.
+- Likely quota/storage failures show a more specific message.
+- A Retry save action is exposed until persistence succeeds.
+- Reconnection retries a pending save.
+- Failed drafts are stored locally per document and offered for restore or recovered-copy creation on the next load; legacy single-draft data is migrated.
+- Offline status is shown separately from the Saved/dirty state so local editing remains available.
+- Automatic snapshots check every three minutes but only create a snapshot after content changes; opening a document and leaving it idle does not create snapshots.
+- History, backup, import, and attachment cleanup are grouped under the sidebar Library Tools dropup.
+
+Browser quota enforcement stress tests, service-worker rollout failure matrices, and multi-browser validation remain open; quota estimates and persistent-storage state are surfaced when the browser provides them.
 
 ### Horizon 0 progress: recovery package
 
@@ -208,7 +228,7 @@ The next recovery slice is now implemented:
 - Missing attachment references are reported after import instead of failing silently.
 - Deleting a document removes assets that are no longer reachable from remaining documents or snapshots.
 
-Remaining recovery work is standard relative-path Markdown export, a visible orphan-asset manager, failed-save/quota handling, offline validation, and CI.
+The Import action also accepts ordinary ZIPs containing `.md` files; those imports create documents without MarkFlow snapshot/asset metadata. Remaining recovery work is quota estimation, durable failed-save queuing, and offline validation. Export artifact coverage and the first CI workflow are now in place.
 
 ## Review Of The Original Plan
 
@@ -241,7 +261,7 @@ The plan needs explicit gates before calling a phase complete:
 - **Portability gate:** export a document with images, tables, math, Mermaid, links, and footnotes; re-open it outside MarkFlow; no silent data loss.
 - **Recovery gate:** delete/reload/browser-offline scenarios; restore a backup into a clean profile.
 - **Markdown safety gate:** formatting and table operations preserve valid block structure and protected inline syntax.
-- **Accessibility gate:** keyboard-only workflow, focus order, contrast, screen reader labels, and reduced motion.
+- **Accessibility gate:** keyboard-only workflow, focus order, contrast, and screen reader labels; ~~reduced-motion support~~ is implemented but still needs visual verification.
 - **Performance gate:** defined budgets for startup, typing latency, preview render, 1 MB documents, and wide/long tables.
 - **Mobile gate:** touch-only completion of writing, formatting, table insertion, and export.
 - **Trust gate:** large operations show a clear scope and, where appropriate, a source diff before Apply.
@@ -263,21 +283,23 @@ The plan needs explicit gates before calling a phase complete:
 
 Goal: make the current MVP safe to rely on.
 
-1. Add CI on Node 20+ and run both pure tests and the browser suite.
-2. Expand the pure tests with property-based and malformed-input cases:
+**Completion status: implementation complete; maturity validation in progress.** The deterministic parser, export, recovery, cleanup, retry-save, property coverage, storage health, accessibility semantics, and Node 20 CI workflow are implemented/configured. Production hardening still requires the CI matrix to pass, plus storage-pressure, service-worker rollout, human accessibility, touch, and performance validation.
+
+1. ~~Add CI on Node 20+ and run both pure tests and the browser suite.~~ Configured for Chromium, Firefox, WebKit, and a mobile viewport on Node 20; the current local Node 18 environment cannot execute that matrix.
+2. ~~Expand the pure tests with property-based and malformed-input cases.~~ Done with bounded fast-check generators and malformed-input safety contracts:
    - inline formatting parse/toggle/serialize
    - nested and partial marks
    - links, code, math, images, HTML, escapes
    - headings, lists, fences, rules, and table structure
    - table parse/serialize round trips
-3. Add export artifact tests for Markdown, ZIP, HTML, and generated print HTML.
+3. ~~Add export artifact tests for Markdown, ZIP, HTML, and generated print HTML.~~ Pure artifact contracts are implemented; browser print and rendered-asset artifacts remain.
 4. ~~Add backup import with manifest validation and conflict handling.~~ Done as duplicate-as-new restore; merge conflicts remain intentionally unsupported.
-5. Rewrite attachment references during portable Markdown export, or clearly label the package as MarkFlow-specific.
-6. Add a visible asset reference scan, orphan cleanup, and a document/asset storage health view.
-7. Add offline boot/edit/save/update tests.
-8. Add failed-save retry and browser-quota messaging.
-9. Add keyboard-only, screen-reader, contrast, and reduced-motion audits.
-10. Add mobile viewport tests for the table editor and toolbars.
+5. ~~Rewrite attachment references during portable Markdown export.~~ Done for attachment-bearing Markdown ZIP exports with standard `assets/...` paths; missing blobs remain visible.
+6. ~~Add a visible asset reference scan and orphan cleanup.~~ Done with the Assets manager and deletion reachability cleanup; storage health and offline validation remain.
+7. ~~Add offline boot/edit/save/update tests.~~ The smoke suite covers offline service-worker boot/reload and local document recovery; rollout/update failure scenarios remain.
+8. ~~Add failed-save retry and browser-quota messaging.~~ Retry, likely quota/storage messaging, and a multi-document durable recovery queue are implemented; quota stress remains.
+9. Add keyboard-only, screen-reader, full contrast, and reduced-motion audits; automated key-control checks exist.
+10. Add a full touch table workflow audit; the current mobile check covers shell overflow and primary controls only.
 
 Exit condition: a user can edit, export, delete, restore, and reopen a document with no silent data loss.
 
@@ -285,14 +307,15 @@ Exit condition: a user can edit, export, delete, restore, and reopen a document 
 
 Goal: own the “Markdown without anxiety” category.
 
-1. **Markdown Confidence panel**
+1. **Markdown Confidence panel** — initial read-only diagnostics shipped
    - malformed table detection
    - unclosed emphasis/code/strike detection
    - broken link and missing attachment detection
    - heading hierarchy warnings
    - duplicate heading ID warnings
    - unsupported HTML and portability warnings
-   - one-click safe fixes with a source diff
+   - the current panel reports local line/column findings and does not fetch remote URLs
+   - one-click safe fixes with a source diff remain part of the next Source Diff Before Apply slice
 2. **Source Diff Before Apply**
    - table editor shows exact Markdown changes before commit
    - formatting actions can show “before / after” for multi-cell operations

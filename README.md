@@ -1,3 +1,4 @@
+**Next hardening:** service-worker update/failure matrices, multi-entry failed-save queuing, and screen-reader/contrast/mobile audits.
 # MarkFlow v0.1
 
 A **local-first, privacy-first Markdown editor** for the web. Built per `markdown-editor-project/01-deep-analysis-and-plan.md` to fix the documented gaps in Dillinger / StackEdit / HackMD: tables that don't suck, images that just work, beautiful **client-side** PDF export, and a real document library — with nothing ever leaving the user's browser.
@@ -20,9 +21,9 @@ npm run build    # → dist/  (upload this to Hostinger shared hosting — see D
 | **Visual table editor (spreadsheet-style)** | Letter bar + row-number gutter frame the grid; **pinned top ops bar**; contextual **+** circles use clipped top/bottom-left row-number and top-left/top-right column-letter hotspots with no guide lines; **wide tables scroll inside the modal**; B/I/S/code/link + common alignment with live preview & active states; **promote any row to header (Replace/Move)**; duplicate/move/clear/delete; **snapshot undo/redo**; **Ctrl/Shift multi-select rows & columns**; **semantic formatting** (nested/partial marks, protected links/code/math/images/HTML, mixed selection sync); **sort (numeric-aware, header-protected)** + view-only **filter**; **expandable window**; **drag column/row sizing** (view-only; inputs stretch into tall rows) — a tall row always stays ONE logical & visual row; Excel/Sheets paste (first row → header, auto-expands) **and** row/column copy-out as TSV; insert-table **size picker**; auto-aligned source output |
 
 | **Smart images** | Paste/drop/upload → IndexedDB (`attachment:` refs) → exports inline them automatically |
-| Document library | IndexedDB (Dexie): unlimited docs, search, rename/duplicate/delete, autosave |
-| Version history | Ctrl+S named snapshots + 3-min auto snapshots, restore/download from History |
-| Recovery | Versioned backup ZIP with documents, snapshots, referenced assets, and visible Import restore; imported attachment IDs are remapped safely |
+| Document library | IndexedDB (Dexie): quota-limited documents, search, rename/duplicate/delete, autosave, storage health, and persistent-storage protection request |
+| Version history | Ctrl+S named snapshots + 3-min auto snapshots only after content changes, restore/download from History |
+| Recovery | Library Tools dropup: versioned backup/import with snapshots/assets, plus ordinary ZIP import for `.md` files; imported attachment IDs are remapped safely |
 | Export | `.md` (auto-zips when images attached) · versioned backup ZIP · standalone HTML (images embedded) · **PDF via browser print** (3 themes, selectable text, no watermark) |
 | Modes / themes | Source · Split (scroll-synced) · Preview — dark & light, PWA installable, works offline |
 | Portability settings | Toggle inline HTML & single-newline behavior (GitHub parity on demand) |
@@ -36,7 +37,7 @@ src/
   toolbar.ts         formatting commands (inline/line/insert ops)
   tableEditor.ts     the visual table grid editor (modal)
   library.ts         sidebar doc list
-  exporter.ts        md/html/pdf/zip export, print themes
+  exporter.ts        portable md/html/pdf/backup export, print themes, restore import
   ui.ts              modals, toasts, popovers, helpers
   state.ts           settings (localStorage — settings only!)
   welcome.ts         onboarding seed document
@@ -46,8 +47,11 @@ src/
     tables.ts        escape-aware, fence-aware table parse/serialize
     storage.ts       Dexie: docs / snapshots / assets
     images.ts        paste-drop ingest, object-URL resolution
+    attachments.ts   attachment reference and portable path mapping
+    backup.ts        versioned backup manifest/export/import, generic Markdown ZIP fallback
 test/
-  smoke.mjs          24-check headless boot+interaction suite (playwright-core)
+  smoke.mjs          browser boot+interaction suite (playwright-core)
+  *.test.ts          pure formatting, table, diagnostics, attachment, backup, and export contracts
 ```
 
 ## Testing
@@ -58,12 +62,12 @@ npm run build                        # production bundle
 npm run build && node test/smoke.mjs # browser suite; requires Node 20+ and a static server on :4173
 ```
 
-The pure suite currently covers 14 formatting, table, and backup contracts. The browser suite remains a larger smoke script and requires Node 20+ for the installed Playwright version.
+The pure suite currently covers 37 formatting, table, Markdown Confidence, attachment, backup, export-artifact, generic ZIP-import, malformed-input, property-based, and save-recovery contracts. The browser suite remains a larger smoke script and requires Node 20+ for the installed Playwright version.
 
 ## Status & next steps
 
-**Shipped (v0.1):** everything above, including semantic inline formatting and deterministic parser/table contract tests.
-**Next hardening:** CI on Node 20+, portable attachment paths, visible orphan cleanup, offline validation, export artifact tests, and mobile/accessibility audits.
+**Shipped (v0.1):** everything above, including semantic inline formatting, deterministic parser/table contract tests, and the initial read-only Markdown Confidence panel.
+**Next Horizon 1 slice:** source diff before apply for table and multi-cell changes, followed by safe Confidence repairs. Remaining hardening includes the Node 20 browser matrix, service-worker rollout failure matrices, quota stress testing, and screen-reader/contrast/mobile audits.
 **Later:** target-platform preview modes, paste-rich-text→Markdown, AI sidebar (BYOK), GitHub sync, DOCX export, image resize handles, and code-live "Live" mode.
 **v2:** Yjs collaboration + comments, sharing links.
 

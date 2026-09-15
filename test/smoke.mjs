@@ -1,13 +1,18 @@
 // Headless smoke test for the built MarkFlow app.
-import { chromium } from 'playwright-core';
+import { chromium, firefox, webkit } from 'playwright-core';
 
 const BASE = 'http://127.0.0.1:4173';
+const browserName = process.env.BROWSER || 'chromium';
+const [viewportWidth, viewportHeight] = (process.env.VIEWPORT || '1440x900').split('x').map(Number);
 const errors = [];
 const fails = [];
 const ok = (name, cond) => { console.log((cond ? '  ✔ ' : '  ✘ ') + name); if (!cond) fails.push(name); };
 
-const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+const browserTypes = { chromium, firefox, webkit };
+const browserType = browserTypes[browserName];
+if (!browserType) throw new Error(`Unsupported BROWSER=${browserName}; use chromium, firefox, or webkit.`);
+const browser = await browserType.launch();
+const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
 page.on('console', (msg) => { if (msg.type() === 'error') errors.push(msg.text()); });
 page.on('pageerror', (err) => errors.push('PAGEERROR: ' + err.message));
 
@@ -24,6 +29,78 @@ ok('code highlighted (hljs)', await page.locator('#preview pre code span[class*=
 ok('task list checkboxes rendered', await page.locator('#preview .task-list-item input[type="checkbox"]').count() >= 3);
 ok('footnote section rendered', await page.locator('#preview .footnotes').count() === 1);
 ok('sidebar lists Welcome doc', (await page.locator('#docList').innerText()).includes('Welcome to MarkFlow'));
+ok('PWA lifecycle reports cache readiness or an explicit fallback', await page.evaluate(() => {
+  const text = document.querySelector('#pwaStatus')?.textContent || '';
+  return text === '' || /App cache unavailable|App updated|Updating app/.test(text);
+}));
+await page.locator('#libraryToolsBtn').click();
+await page.getByRole('menuitem', { name: 'Local storage health' }).click();
+ok('storage health reports local counts and quota fields', await page.locator('.modal').last().innerText().then((text) =>
+  text.includes('Documents') && text.includes('Estimated quota') && text.includes('Persistent storage')));
+await page.locator('.modal').last().locator('.btn.ghost').click();
+ok('accessible top-level controls expose names and state', await page.evaluate(() => {
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  return tabs.length === 3 && tabs.every((tab) => tab.getAttribute('aria-selected') === 'true' || tab.getAttribute('aria-selected') === 'false')
+    && document.querySelector('#sidebarToggle')?.getAttribute('aria-label')
+    && document.querySelector('#themeToggle')?.getAttribute('aria-label')
+    && document.querySelector('#saveState')?.getAttribute('aria-live') === 'polite';
+}));
+ok('key light-theme text meets AA contrast', await page.evaluate(() => {
+  const parse = (value) => {
+    const match = value.match(/rgba?\(([^)]+)\)/);
+    if (!match) return null;
+    const values = match[1].split(',').map((part) => Number.parseFloat(part.trim()));
+    return { r: values[0], g: values[1], b: values[2], a: values[3] ?? 1 };
+  };
+  const luminance = (rgb) => {
+    const channels = [rgb.r, rgb.g, rgb.b].map((channel) => channel / 255).map((channel) => channel <= .03928 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4);
+    return .2126 * channels[0] + .7152 * channels[1] + .0722 * channels[2];
+  };
+  const ratio = (foreground, background) => {
+    const light = Math.max(luminance(foreground), luminance(background));
+    const dark = Math.min(luminance(foreground), luminance(background));
+    return (light + .05) / (dark + .05);
+  };
+  const samples = [document.body, document.querySelector('#preview h1'), document.querySelector('.btn.primary')].filter(Boolean);
+  return samples.every((element) => {
+    const style = getComputedStyle(element);
+    const foreground = parse(style.color);
+    const localBackground = parse(style.backgroundColor);
+    const background = localBackground && localBackground.a > 0 ? localBackground : parse(getComputedStyle(document.body).backgroundColor);
+    return foreground && background && ratio(foreground, background) >= 4.5;
+  });
+}));
+if (viewportWidth <= 600) {
+  ok('mobile viewport has no document-level horizontal overflow', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
+  ok('mobile viewport keeps the primary editor controls available', await page.locator('#toolbar, #editorPane').first().isVisible());
+  await browser.close();
+  process.exit(fails.length ? 1 : 0);
+}
+
+console.log('— offline boot and local recovery —');
+const serviceWorkerReady = await page.evaluate(async () => {
+  if (!('serviceWorker' in navigator)) return false;
+  try {
+    await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('service worker timeout')), 5000)),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+});
+ok('service worker becomes ready for offline boot', serviceWorkerReady);
+if (serviceWorkerReady) {
+  const cachedText = await page.locator('.cm-content').innerText();
+  await page.context().setOffline(true);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2500);
+  ok('editor boots while offline from the cached app shell', await page.locator('.cm-editor').count() === 1);
+  ok('offline boot restores locally stored document content', (await page.locator('.cm-content').innerText()) === cachedText);
+  ok('offline status is announced', await page.locator('#connectivityStatus').innerText() === 'Offline — local only');
+  await page.context().setOffline(false);
+}
 
 console.log('— R3 sheet UI: letter bar + number gutter + corner —');
 await page.locator('.table-wrap').hover();

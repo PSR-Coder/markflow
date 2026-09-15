@@ -28,6 +28,16 @@ export interface Asset {
   ts: number;
 }
 
+export interface StorageHealth {
+  documents: number;
+  snapshots: number;
+  assets: number;
+  usage?: number;
+  quota?: number;
+  persistent?: boolean;
+  persistenceAvailable: boolean;
+}
+
 class MarkFlowDB extends Dexie {
   docs!: Table<Doc, string>;
   snaps!: Table<Snapshot, number>;
@@ -54,6 +64,33 @@ const SNAPSHOT_KEEP = 40;
 
 export async function listDocs(): Promise<Doc[]> {
   return db.docs.orderBy('updatedAt').reverse().toArray();
+}
+
+export async function getStorageHealth(): Promise<StorageHealth> {
+  const [documents, snapshots, assets] = await Promise.all([
+    db.docs.count(),
+    db.snaps.count(),
+    db.assets.count(),
+  ]);
+  const storage = typeof navigator !== 'undefined' ? navigator.storage : undefined;
+  const [estimate, persistent] = await Promise.all([
+    storage?.estimate?.() ?? Promise.resolve(undefined),
+    storage?.persisted?.() ?? Promise.resolve(undefined),
+  ]);
+  return {
+    documents,
+    snapshots,
+    assets,
+    usage: estimate?.usage,
+    quota: estimate?.quota,
+    persistent,
+    persistenceAvailable: typeof storage?.persist === 'function',
+  };
+}
+
+export async function requestPersistentStorage(): Promise<boolean> {
+  const storage = typeof navigator !== 'undefined' ? navigator.storage : undefined;
+  return typeof storage?.persist === 'function' ? storage.persist() : false;
 }
 
 export async function createDoc(title: string, content = ''): Promise<Doc> {
@@ -119,12 +156,13 @@ export async function getAsset(id: string): Promise<Asset | undefined> {
   return db.assets.get(id);
 }
 
-export async function listOrphanAssets(): Promise<Asset[]> {
+export async function listOrphanAssets(extraContents: readonly string[] = []): Promise<Asset[]> {
   const docs = await db.docs.toArray();
   const snapshots = await db.snaps.toArray();
   const referenced = new Set<string>();
   for (const doc of docs) attachmentIds(doc.content).forEach((assetId) => referenced.add(assetId));
   for (const snapshot of snapshots) attachmentIds(snapshot.content).forEach((assetId) => referenced.add(assetId));
+  for (const content of extraContents) attachmentIds(content).forEach((assetId) => referenced.add(assetId));
   return (await db.assets.toArray()).filter((asset) => !referenced.has(asset.id));
 }
 

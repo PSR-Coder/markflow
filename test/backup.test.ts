@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildBackupZip, readBackupZip } from '../src/core/backup';
+import JSZip from 'jszip';
+import { buildBackupZip, readBackupZip, readMarkdownZip } from '../src/core/backup';
 
 describe('backup packages', () => {
   it('round-trips document, snapshot, and attachment metadata', async () => {
@@ -19,5 +20,16 @@ describe('backup packages', () => {
 
   it('rejects ZIP files without a compatible manifest', async () => {
     await expect(readBackupZip(new Blob(['not a zip']))).rejects.toThrow();
+  });
+
+  it('imports ordinary ZIPs containing Markdown files', async () => {
+    const zip = new JSZip();
+    zip.file('first.md', '# First');
+    zip.file('nested/second.md', '# Second');
+    const parsed = await readMarkdownZip(await zip.generateAsync({ type: 'blob' }));
+    expect(parsed.documents.map((doc) => [doc.title, doc.content])).toEqual([
+      ['first', '# First'],
+      ['second', '# Second'],
+    ]);
   });
 });

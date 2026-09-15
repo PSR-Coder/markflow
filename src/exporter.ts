@@ -1,11 +1,11 @@
 // Export engine. Everything happens client-side — your text never touches a server.
 // (Dillinger sends your document to *their* server for PDF. StackEdit paywalls it.
 //  We print locally with selectable text and no watermark. That's the point.)
-import JSZip from 'jszip';
 import { addImportedSnapshot, createDoc, db, listSnapshots, putAsset, saveDoc, type Doc } from './core/storage';
 import { attachmentIds, inlineAssetsInHtml } from './core/images';
-import { buildBackupZip, readBackupZip } from './core/backup';
+import { buildBackupZip, readBackupZip, readMarkdownZip } from './core/backup';
 import { rewriteAttachmentIds } from './core/attachments';
+import { buildPortableMarkdownZip, buildPrintHtmlDocument, buildStandaloneHtmlDocument } from './core/exportArtifacts';
 import { toast } from './ui';
 
 export function slug(name: string): string {
@@ -34,17 +34,14 @@ export async function exportMarkdown(doc: Doc, assetNote = true): Promise<void> 
     if (assetNote) toast('Downloaded Markdown.', 'ok');
     return;
   }
-  const zip = new JSZip();
-  zip.file(`${slug(doc.title)}.md`, doc.content);
-  const assetsFolder = zip.folder('assets')!;
+  const assets = [];
   for (const id of ids) {
     const asset = await db.assets.get(id);
-    if (asset) assetsFolder.file(asset.name || id, asset.blob);
+    if (asset) assets.push(asset);
   }
-  zip.file('README.txt', `This export belongs to "${doc.title}".\nImage references like attachment:<id> correspond to files in ./assets/.\nRe-import the images into MarkFlow or rewrite paths to ./assets/<name> as needed.\n`);
-  const blob = await zip.generateAsync({ type: 'blob' });
+  const blob = await buildPortableMarkdownZip({ title: doc.title, content: doc.content }, assets);
   downloadBlob(`${slug(doc.title)}.zip`, blob);
-  toast(`Exported as zip with ${ids.length} embedded image(s).`, 'ok');
+  toast(`Exported as portable Markdown with ${assets.length} embedded image(s).`, 'ok');
 }
 
 export async function exportBackupZip(docs: Doc[]): Promise<void> {
@@ -63,13 +60,18 @@ export async function exportBackupZip(docs: Doc[]): Promise<void> {
 }
 
 export async function importBackupZip(blob: Blob): Promise<{ documents: number; snapshots: number; assets: number; missingAssets: number }> {
-  const backup = await readBackupZip(blob);
+  let backup;
+  try {
+    backup = await readBackupZip(blob);
+  } catch (error) {
+    if (error instanceof Error && /manifest/i.test(error.message)) backup = await readMarkdownZip(blob);
+    else throw error;
+  }
   const assetIds = new Map<string, string>();
   for (const asset of backup.assets) {
     const imported = await putAsset(asset.blob, asset.name);
     assetIds.set(asset.sourceId, imported.id);
   }
-  const docIds = new Map<string, string>();
   let missingAssets = 0;
   const referenced = (content: string): void => {
     for (const id of attachmentIds(content)) if (!assetIds.has(id)) missingAssets++;
@@ -81,7 +83,6 @@ export async function importBackupZip(blob: Blob): Promise<{ documents: number; 
     doc.createdAt = entry.createdAt;
     doc.updatedAt = entry.updatedAt;
     await saveDoc(doc);
-    docIds.set(entry.sourceId, doc.id);
     for (const snapshot of entry.snapshots) {
       await addImportedSnapshot({
         docId: doc.id,
@@ -124,10 +125,7 @@ const EXPORT_CSS = `
 
 export async function exportStandaloneHtml(title: string, previewHtml: string): Promise<void> {
   const bodyHtml = await inlineAssetsInHtml(previewHtml);
-  const html = `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)}</title><style>${EXPORT_CSS}</style></head>
-<body>${bodyHtml}<p class="generated">Exported from MarkFlow — local-first Markdown editor.</p></body></html>`;
+  const html = buildStandaloneHtmlDocument(title, bodyHtml, EXPORT_CSS);
   downloadText(`${slug(title)}.html`, html, 'text/html');
   toast('Downloaded standalone HTML (images embedded).', 'ok');
 }
@@ -178,29 +176,10 @@ export async function exportPdfViaPrint(previewHtml: string, opts: PrintOpts): P
     toast('Pop-up blocked — allow pop-ups for this site to print to PDF.', 'err', 4200);
     return;
   }
-  const html = `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><base href="${base}"><title>${escapeHtml(opts.title)}</title>
-<style>${appCss}</style>
-<style>
-  @page { size: A4; margin: 17mm 16mm; }
-  html,body { background:#fff !important; }
-  body { max-width: 720px; margin: 0 auto; padding: 12px 6px 40px; }
-  ${themeCss}
-  .mermaid-diagram{border:1px solid #ddd;border-radius:8px;padding:10px;}
-  .doc-title-block{font-size:.8em;color:#888;margin-bottom:28px;letter-spacing:.02em;}
-</style></head>
-<body>
-<div class="doc-title-block">Exported from MarkFlow · ${new Date().toLocaleDateString()}</div>
-${bodyHtml}
-<script>window.addEventListener('load',function(){setTimeout(function(){window.print();},450);});<\/script>
-</body></html>`;
+  const html = buildPrintHtmlDocument(opts.title, bodyHtml, appCss, themeCss, base, new Date().toLocaleDateString());
   w.document.write(html);
   w.document.close();
   toast('Print view opened — choose “Save as PDF”. Text stays selectable, no watermark.', 'ok', 4200);
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
 }
 
 // re-export for main

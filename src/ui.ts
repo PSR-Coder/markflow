@@ -156,15 +156,24 @@ export function confirmDialog(title: string, message: string, okLabel = 'Delete'
 }
 
 /** Simple anchored popover menu. */
-export function popMenu(anchor: HTMLElement, items: { label: string; note?: string; onClick: () => void }[], note?: string): void {
+export function popMenu(anchor: HTMLElement, items: { label: string; note?: string; onClick: () => void }[], note?: string, placement: 'up' | 'down' = 'down'): void {
   document.querySelectorAll('.menu-pop').forEach((m) => m.remove());
   const menu = document.createElement('div');
   menu.className = 'menu-pop';
+  menu.setAttribute('role', 'menu');
+  menu.tabIndex = -1;
+  anchor.setAttribute('aria-expanded', 'true');
+  const close = () => {
+    menu.remove();
+    anchor.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('mousedown', onDoc);
+  };
   for (const item of items) {
     const b = document.createElement('button');
     b.type = 'button';
+    b.setAttribute('role', 'menuitem');
     b.textContent = item.label;
-    b.addEventListener('click', () => { menu.remove(); item.onClick(); });
+    b.addEventListener('click', () => { close(); item.onClick(); });
     menu.appendChild(b);
   }
   if (note) {
@@ -175,12 +184,14 @@ export function popMenu(anchor: HTMLElement, items: { label: string; note?: stri
   }
   document.body.appendChild(menu);
   const r = anchor.getBoundingClientRect();
-  menu.style.top = `${r.bottom + 6}px`;
+  if (placement === 'up') menu.style.bottom = `${Math.max(8, window.innerHeight - r.top + 6)}px`;
+  else menu.style.top = `${r.bottom + 6}px`;
   menu.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
   const onDoc = (e: MouseEvent) => {
-    if (!menu.contains(e.target as Node) && e.target !== anchor) { menu.remove(); document.removeEventListener('mousedown', onDoc); }
+    if (!menu.contains(e.target as Node) && e.target !== anchor) close();
   };
   document.addEventListener('mousedown', onDoc);
+  setTimeout(() => menu.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus(), 0);
 }
 
 export function debounce<A extends unknown[]>(fn: (...args: A) => void, ms: number): (...args: A) => void {
