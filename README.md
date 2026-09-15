@@ -22,9 +22,9 @@ npm run build    # → dist/  (upload this to Hostinger shared hosting — see D
 
 | **Smart images** | Paste/drop/upload → IndexedDB (`attachment:` refs) → exports inline them automatically |
 | Document library | IndexedDB (Dexie): quota-limited documents, search, rename/duplicate/delete, autosave, storage health, and persistent-storage protection request |
-| Version history | Ctrl+S named snapshots + 3-min auto snapshots only after content changes, restore/download from History |
-| Recovery | Library Tools dropup: versioned backup/import with snapshots/assets, plus ordinary ZIP import for `.md` files; imported attachment IDs are remapped safely |
-| Export | `.md` (auto-zips when images attached) · versioned backup ZIP · standalone HTML (images embedded) · **PDF via browser print** (3 themes, selectable text, no watermark) |
+| Version history | Ctrl+S named snapshots + 3-min auto snapshots only after content changes, Diff-before-restore review, restore/download from History |
+| Recovery | Library Tools dropup: portable `.markflow.zip` package with versioned manifest, relative assets, snapshots, settings, and legacy-compatible import; ordinary ZIP import for `.md` files remains supported |
+| Export | `.md` (auto-zips when images attached) · portable `.markflow.zip` package · standalone HTML (images embedded) · **PDF via browser print** (3 themes, selectable text, no watermark) |
 | Modes / themes | Source · Split (scroll-synced) · Preview — dark & light, PWA installable, works offline |
 | Portability settings | Toggle inline HTML & single-newline behavior (GitHub parity on demand) |
 
@@ -48,10 +48,11 @@ src/
     storage.ts       Dexie: docs / snapshots / assets
     images.ts        paste-drop ingest, object-URL resolution
     attachments.ts   attachment reference and portable path mapping
-    backup.ts        versioned backup manifest/export/import, generic Markdown ZIP fallback
+    backup.ts        versioned portable package/export/import, generic Markdown ZIP fallback
+    textDiff.ts      exact line-oriented source review diffs
 test/
   smoke.mjs          browser boot+interaction suite (playwright-core)
-  *.test.ts          pure formatting, table, diagnostics, attachment, backup, and export contracts
+  *.test.ts          pure formatting, table, diagnostics, source-diff, attachment, package, backup, and export contracts
 ```
 
 ## Testing
@@ -62,12 +63,12 @@ npm run build                        # production bundle
 npm run build && node test/smoke.mjs # browser suite; requires Node 20+ and a static server on :4173
 ```
 
-The pure suite currently covers 37 formatting, table, Markdown Confidence, attachment, backup, export-artifact, generic ZIP-import, malformed-input, property-based, and save-recovery contracts. The browser suite remains a larger smoke script and requires Node 20+ for the installed Playwright version.
+The pure suite currently covers 44 formatting, table, Markdown Confidence, source-diff, attachment, portable-package, export-artifact, generic ZIP-import, malformed-input, property-based, and save-recovery contracts. The browser suite remains a larger smoke script and requires Node 20+ for the installed Playwright version.
 
 ## Status & next steps
 
-**Shipped (v0.1):** everything above, including semantic inline formatting, deterministic parser/table contract tests, and the initial read-only Markdown Confidence panel.
-**Next Horizon 1 slice:** source diff before apply for table and multi-cell changes, followed by safe Confidence repairs. Remaining hardening includes the Node 20 browser matrix, service-worker rollout failure matrices, quota stress testing, and screen-reader/contrast/mobile audits.
+**Shipped (v0.1):** everything above, including semantic inline formatting, deterministic parser/table contract tests, read-only Markdown Confidence diagnostics, table source diff before Apply, and portable `.markflow.zip` packages with relative assets, snapshots, settings, and legacy-compatible import.
+**Next Horizon 1 slice:** one-click safe Confidence repairs backed by the source diff, then renderer/platform comparison. Remaining hardening includes the Node 20 browser matrix, service-worker rollout failure matrices, quota stress testing, and screen-reader/contrast/mobile audits.
 **Later:** target-platform preview modes, paste-rich-text→Markdown, AI sidebar (BYOK), GitHub sync, DOCX export, image resize handles, and code-live "Live" mode.
 **v2:** Yjs collaboration + comments, sharing links.
 

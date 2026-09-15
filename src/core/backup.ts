@@ -1,8 +1,18 @@
 import JSZip from 'jszip';
 import type { Asset, Doc, Snapshot } from './storage';
+import { buildPortableAttachmentPaths, rewriteAttachmentPaths } from './attachments';
 
-export const BACKUP_FORMAT = 'markflow-backup';
-export const BACKUP_SCHEMA = 1;
+export const BACKUP_FORMAT = 'markflow-package';
+export const LEGACY_BACKUP_FORMAT = 'markflow-backup';
+export const BACKUP_SCHEMA = 2;
+
+export interface BackupSettings {
+  theme: 'dark' | 'light';
+  mode: 'source' | 'split' | 'preview';
+  sidebarOpen: boolean;
+  renderHtml: boolean;
+  lineBreaks: boolean;
+}
 
 export interface BackupDocumentEntry {
   sourceId: string;
@@ -29,9 +39,10 @@ export interface BackupAssetEntry {
 }
 
 export interface BackupManifest {
-  format: typeof BACKUP_FORMAT;
-  schema: typeof BACKUP_SCHEMA;
+  format: typeof BACKUP_FORMAT | typeof LEGACY_BACKUP_FORMAT;
+  schema: 1 | typeof BACKUP_SCHEMA;
   exportedAt: string;
+  settings?: BackupSettings;
   documents: BackupDocumentEntry[];
   snapshots: BackupSnapshotEntry[];
   assets: BackupAssetEntry[];
@@ -41,6 +52,7 @@ export interface BackupInput {
   docs: Doc[];
   snapshots: Snapshot[];
   assets: Asset[];
+  settings?: BackupSettings;
 }
 
 export interface ParsedBackupDocument extends BackupDocumentEntry {
@@ -62,12 +74,18 @@ function safePathPart(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
 }
 
+function relativeAssetPaths(documentPath: string, paths: ReadonlyMap<string, string>): Map<string, string> {
+  const prefix = documentPath.includes('/') ? '../' : './';
+  return new Map([...paths].map(([id, path]) => [id, `${prefix}${path}`]));
+}
+
 export async function buildBackupZip(input: BackupInput): Promise<Blob> {
   const zip = new JSZip();
   const manifest: BackupManifest = {
     format: BACKUP_FORMAT,
     schema: BACKUP_SCHEMA,
     exportedAt: new Date().toISOString(),
+    settings: input.settings,
     documents: [],
     snapshots: [],
     assets: [],
@@ -75,7 +93,15 @@ export async function buildBackupZip(input: BackupInput): Promise<Blob> {
   const usedDocPaths = new Set<string>();
   const usedSnapshotPaths = new Set<string>();
   const usedAssetPaths = new Set<string>();
-  const docById = new Map(input.docs.map((doc) => [doc.id, doc]));
+  const referenced = new Set<string>();
+  for (const doc of input.docs) {
+    for (const match of doc.content.matchAll(/attachment:([A-Za-z0-9._-]+)/g)) referenced.add(match[1]);
+  }
+  for (const snapshot of input.snapshots) {
+    for (const match of snapshot.content.matchAll(/attachment:([A-Za-z0-9._-]+)/g)) referenced.add(match[1]);
+  }
+  const referencedAssets = input.assets.filter((asset) => referenced.has(asset.id));
+  const portablePaths = buildPortableAttachmentPaths(referencedAssets);
 
   for (const doc of input.docs) {
     const base = `docs/${safePathPart(doc.title)}-${safePathPart(doc.id.slice(0, 8))}`;
@@ -83,7 +109,7 @@ export async function buildBackupZip(input: BackupInput): Promise<Blob> {
     let suffix = 2;
     while (usedDocPaths.has(path)) path = `${base}-${suffix++}.md`;
     usedDocPaths.add(path);
-    zip.file(path, doc.content);
+    zip.file(path, rewriteAttachmentPaths(doc.content, relativeAssetPaths(path, portablePaths)));
     const snapshotPaths: string[] = [];
     for (const snapshot of input.snapshots.filter((item) => item.docId === doc.id)) {
       const snapshotBase = `snapshots/${safePathPart(doc.id.slice(0, 8))}-${safePathPart(snapshot.label)}-${snapshot.ts}`;
@@ -91,7 +117,7 @@ export async function buildBackupZip(input: BackupInput): Promise<Blob> {
       let snapshotSuffix = 2;
       while (usedSnapshotPaths.has(snapshotPath)) snapshotPath = `${snapshotBase}-${snapshotSuffix++}.md`;
       usedSnapshotPaths.add(snapshotPath);
-      zip.file(snapshotPath, snapshot.content);
+      zip.file(snapshotPath, rewriteAttachmentPaths(snapshot.content, relativeAssetPaths(snapshotPath, portablePaths)));
       snapshotPaths.push(snapshotPath);
       manifest.snapshots.push({ sourceDocId: snapshot.docId, label: snapshot.label, words: snapshot.words, ts: snapshot.ts, path: snapshotPath });
     }
@@ -105,19 +131,12 @@ export async function buildBackupZip(input: BackupInput): Promise<Blob> {
     });
   }
 
-  const referenced = new Set<string>();
-  for (const doc of input.docs) {
-    for (const match of doc.content.matchAll(/attachment:([A-Za-z0-9._-]+)/g)) referenced.add(match[1]);
-  }
-  for (const snapshot of input.snapshots) {
-    for (const match of snapshot.content.matchAll(/attachment:([A-Za-z0-9._-]+)/g)) referenced.add(match[1]);
-  }
   for (const asset of input.assets) {
-    if (!referenced.has(asset.id)) continue;
-    const base = `assets/${safePathPart(asset.id)}`;
-    let path = base;
+    const portablePath = portablePaths.get(asset.id);
+    if (!portablePath) continue;
+    let path = portablePath;
     let suffix = 2;
-    while (usedAssetPaths.has(path)) path = `${base}-${suffix++}`;
+    while (usedAssetPaths.has(path)) path = `${portablePath.replace(/(\.[^./]+)$/, '')}-${suffix++}${portablePath.match(/\.[^./]+$/)?.[0] ?? ''}`;
     usedAssetPaths.add(path);
     zip.file(path, asset.blob);
     manifest.assets.push({ sourceId: asset.id, name: asset.name, type: asset.type, path });
@@ -125,8 +144,9 @@ export async function buildBackupZip(input: BackupInput): Promise<Blob> {
 
   zip.file('manifest.json', JSON.stringify(manifest, null, 2));
   zip.file('README.txt', [
-    'MarkFlow backup package.',
-    'Import this ZIP in MarkFlow to restore documents, snapshots, and referenced attachments.',
+    'MarkFlow portable document package.',
+    'Markdown files use standard relative paths to the assets/ folder and can be opened by ordinary Markdown tools.',
+    'Import this ZIP in MarkFlow to restore documents, snapshots, settings, and referenced attachments.',
     'The manifest schema is versioned so future versions can reject incompatible packages safely.',
   ].join('\n'));
   return zip.generateAsync({ type: 'blob' });
@@ -142,12 +162,15 @@ export async function readBackupZip(blob: Blob): Promise<ParsedBackup> {
   } catch {
     throw new Error('The MarkFlow manifest is not valid JSON.');
   }
-  if (manifest.format !== BACKUP_FORMAT || manifest.schema !== BACKUP_SCHEMA) {
+  const supported = (manifest.format === BACKUP_FORMAT && manifest.schema === BACKUP_SCHEMA)
+    || (manifest.format === LEGACY_BACKUP_FORMAT && manifest.schema === 1);
+  if (!supported) {
     throw new Error(`Unsupported MarkFlow backup format or schema (${String(manifest.schema)}).`);
   }
   if (!Array.isArray(manifest.documents) || !Array.isArray(manifest.snapshots) || !Array.isArray(manifest.assets)) {
     throw new Error('The MarkFlow manifest is missing required collections.');
   }
+  if (manifest.settings && !isBackupSettings(manifest.settings)) throw new Error('The MarkFlow manifest contains invalid settings.');
 
   const readText = async (path: string): Promise<string> => {
     const file = zip.file(path);
@@ -201,4 +224,14 @@ export async function readMarkdownZip(blob: Blob): Promise<ParsedBackup> {
     documents,
     assets: [],
   };
+}
+
+function isBackupSettings(value: unknown): value is BackupSettings {
+  if (!value || typeof value !== 'object') return false;
+  const settings = value as Partial<BackupSettings>;
+  return (settings.theme === 'dark' || settings.theme === 'light')
+    && (settings.mode === 'source' || settings.mode === 'split' || settings.mode === 'preview')
+    && typeof settings.sidebarOpen === 'boolean'
+    && typeof settings.renderHtml === 'boolean'
+    && typeof settings.lineBreaks === 'boolean';
 }

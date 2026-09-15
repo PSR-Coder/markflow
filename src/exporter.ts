@@ -4,9 +4,10 @@
 import { addImportedSnapshot, createDoc, db, listSnapshots, putAsset, saveDoc, type Doc } from './core/storage';
 import { attachmentIds, inlineAssetsInHtml } from './core/images';
 import { buildBackupZip, readBackupZip, readMarkdownZip } from './core/backup';
-import { rewriteAttachmentIds } from './core/attachments';
+import { rewriteAttachmentIds, rewritePortableAttachmentPaths } from './core/attachments';
 import { buildPortableMarkdownZip, buildPrintHtmlDocument, buildStandaloneHtmlDocument } from './core/exportArtifacts';
 import { toast } from './ui';
+import { saveSettings, settings } from './state';
 
 export function slug(name: string): string {
   return name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') || 'document';
@@ -54,12 +55,17 @@ export async function exportBackupZip(docs: Doc[]): Promise<void> {
     const asset = await db.assets.get(id);
     if (asset) assets.push(asset);
   }
-  const blob = await buildBackupZip({ docs, snapshots, assets });
-  downloadBlob(`markflow-backup-${new Date().toISOString().slice(0, 10)}.zip`, blob);
+  const blob = await buildBackupZip({
+    docs,
+    snapshots,
+    assets,
+    settings: { ...settings },
+  });
+  downloadBlob(`markflow-${new Date().toISOString().slice(0, 10)}.markflow.zip`, blob);
   toast(`Backed up ${docs.length} document(s), ${snapshots.length} snapshot(s), and ${assets.length} attachment(s).`, 'ok');
 }
 
-export async function importBackupZip(blob: Blob): Promise<{ documents: number; snapshots: number; assets: number; missingAssets: number }> {
+export async function importBackupZip(blob: Blob): Promise<ImportBackupResult> {
   let backup;
   try {
     backup = await readBackupZip(blob);
@@ -68,18 +74,24 @@ export async function importBackupZip(blob: Blob): Promise<{ documents: number; 
     else throw error;
   }
   const assetIds = new Map<string, string>();
+  const portableIds = new Map<string, string>();
   for (const asset of backup.assets) {
     const imported = await putAsset(asset.blob, asset.name);
     assetIds.set(asset.sourceId, imported.id);
+    portableIds.set(asset.path, imported.id);
+    portableIds.set(`../${asset.path}`, imported.id);
+    portableIds.set(`./${asset.path}`, imported.id);
   }
   let missingAssets = 0;
   const referenced = (content: string): void => {
     for (const id of attachmentIds(content)) if (!assetIds.has(id)) missingAssets++;
   };
   for (const entry of backup.documents) {
-    referenced(entry.content);
-    for (const snapshot of entry.snapshots) referenced(snapshot.content);
-    const doc = await createDoc(entry.title, rewriteAttachmentIds(entry.content, assetIds));
+    const normalize = (content: string): string => rewritePortableAttachmentPaths(rewriteAttachmentIds(content, assetIds), portableIds);
+    const docContent = normalize(entry.content);
+    referenced(docContent);
+    for (const snapshot of entry.snapshots) referenced(normalize(snapshot.content));
+    const doc = await createDoc(entry.title, docContent);
     doc.createdAt = entry.createdAt;
     doc.updatedAt = entry.updatedAt;
     await saveDoc(doc);
@@ -87,13 +99,23 @@ export async function importBackupZip(blob: Blob): Promise<{ documents: number; 
       await addImportedSnapshot({
         docId: doc.id,
         label: snapshot.label,
-        content: rewriteAttachmentIds(snapshot.content, assetIds),
+        content: normalize(snapshot.content),
         words: snapshot.words,
         ts: snapshot.ts,
       });
     }
   }
-  return { documents: backup.documents.length, snapshots: backup.manifest.snapshots.length, assets: backup.assets.length, missingAssets };
+  if (backup.manifest.settings) {
+    Object.assign(settings, backup.manifest.settings);
+    saveSettings();
+  }
+  return {
+    documents: backup.documents.length,
+    snapshots: backup.manifest.snapshots.length,
+    assets: backup.assets.length,
+    missingAssets,
+    settingsRestored: Boolean(backup.manifest.settings),
+  };
 }
 
 // ---------- standalone HTML export ----------
@@ -150,6 +172,14 @@ const PRINT_THEMES: Record<PrintTheme, { label: string; css: string }> = {
 };
 
 interface PrintOpts { title: string; theme: PrintTheme; toc: boolean; }
+
+export interface ImportBackupResult {
+  documents: number;
+  snapshots: number;
+  assets: number;
+  missingAssets: number;
+  settingsRestored: boolean;
+}
 
 function collectPageStyles(): string {
   let css = '';

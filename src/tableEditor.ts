@@ -11,8 +11,9 @@
 // and says why.
 import { EditorView } from '@codemirror/view';
 import { openModal, formDialog, toast } from './ui';
-import { findTableAtLine, serializeTable, type Align, type TableBlock } from './core/tables';
+import { findTableAtLine, serializeTable, tableLinesEquivalent, type Align, type TableBlock } from './core/tables';
 import { getInlineMarkState, toggleInlineMarkup, type InlineMarker } from './core/inlineFormatting';
+import { buildLineDiff } from './core/textDiff';
 
 interface Model {
   rows: string[][]; // [0] = header (always)
@@ -105,6 +106,7 @@ export function openTableEditorAtCursor(view: EditorView): boolean {
       toast('Table updated — source stays perfectly aligned.', 'ok');
     },
     'Edit table',
+    lines.slice(found.startLine, found.endLine + 1).join('\n'),
   );
   return true;
 }
@@ -130,6 +132,7 @@ export function openTableEditorFresh(view: EditorView, cols = 3, rows = 3): void
       toast('Table inserted.', 'ok');
     },
     'Insert table',
+    '',
   );
 }
 
@@ -190,12 +193,13 @@ export function openTableEditorByIndex(view: EditorView, index: number, allTable
       toast('Table updated — source stays perfectly aligned.', 'ok');
     },
     `Edit table ${index + 1}`,
+    view.state.doc.toString().split('\n').slice(found.startLine, found.endLine + 1).join('\n'),
   );
 }
 
 // -------------------------------------- modal --------------------------------------
 
-function openEditorUI(getModel: () => Model, onApply: ApplyFn, title: string): void {
+function openEditorUI(getModel: () => Model, onApply: ApplyFn, title: string, originalSource: string): void {
   const model = getModel();
   const cols = () => model.rows[0]?.length ?? 1;
 
@@ -1071,6 +1075,48 @@ function openEditorUI(getModel: () => Model, onApply: ApplyFn, title: string): v
   }
   rerender();
 
+  function openSourceDiff(): void {
+    syncModel();
+    const nextSource = serializeTable(model.rows, model.aligns);
+    const diff = buildLineDiff(originalSource, nextSource, { equivalent: tableLinesEquivalent });
+    const body = el('div', 'source-diff');
+    const summary = el('p', 'muted-note');
+    const normalizedLines = diff.filter((line) => line.kind === 'normalized').length;
+    const addedLines = diff.filter((line) => line.kind === 'added').length;
+    const removedLines = diff.filter((line) => line.kind === 'removed').length;
+    const changedLines = Math.max(addedLines, removedLines);
+    summary.textContent = nextSource === originalSource
+      ? 'No Markdown changes are pending.'
+      : `${changedLines} content line${changedLines === 1 ? '' : 's'} changed. Review the exact Markdown change before it reaches the document.${normalizedLines ? ` ${normalizedLines} line${normalizedLines === 1 ? '' : 's'} are shown as neutral context because only table padding was re-aligned.` : ''}`;
+    body.appendChild(summary);
+    const code = el('div', 'source-diff-code');
+    for (const line of diff) {
+      const row = el('div', `source-diff-line ${line.kind}`);
+      const marker = el('span', 'source-diff-marker');
+      marker.textContent = line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : line.kind === 'normalized' ? '·' : ' ';
+      marker.setAttribute('aria-hidden', 'true');
+      const text = el('code');
+      text.textContent = line.text || ' ';
+      row.append(marker, text);
+      code.appendChild(row);
+    }
+    body.appendChild(code);
+    const back = el('button', 'btn ghost');
+    back.type = 'button';
+    back.textContent = 'Back to editor';
+    const confirm = el('button', 'btn primary');
+    confirm.type = 'button';
+    confirm.textContent = 'Apply changes';
+    confirm.disabled = nextSource === originalSource;
+    const review = openModal({ title: 'Review Markdown changes', body, foot: [back, confirm], wide: true });
+    back.addEventListener('click', review.close);
+    confirm.addEventListener('click', () => {
+      onApply(nextSource);
+      review.close();
+      handle.close();
+    });
+  }
+
   grid.addEventListener('focusin', (e) => {
     const t = e.target as HTMLElement;
     if (t.classList?.contains('te-cell')) {
@@ -1142,11 +1188,7 @@ function openEditorUI(getModel: () => Model, onApply: ApplyFn, title: string): v
   const apply = el('button', 'btn primary'); apply.type = 'button'; apply.textContent = 'Apply to document';
   const handle = openModal({ title, body: root, foot: [cancel, apply], wide: true });
   cancel.addEventListener('click', handle.close);
-  apply.addEventListener('click', () => {
-    syncModel();
-    onApply(serializeTable(model.rows, model.aligns));
-    handle.close();
-  });
+  apply.addEventListener('click', openSourceDiff);
 
   // expand/shrink the editor window (#7)
   const maxBtn = el('button', 'modal-x te-maxbtn');

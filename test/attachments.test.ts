@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attachmentIds, buildPortableAttachmentPaths, rewriteAttachmentPaths } from '../src/core/attachments';
+import { attachmentIds, buildPortableAttachmentPaths, rewriteAttachmentPaths, rewritePortableAttachmentPaths } from '../src/core/attachments';
 
 describe('attachment portability', () => {
   it('deduplicates attachment references', () => {
@@ -21,5 +21,11 @@ describe('attachment portability', () => {
     const paths = new Map([['one', 'assets/photo.png']]);
     expect(rewriteAttachmentPaths('![one](attachment:one) ![two](attachment:two)', paths))
       .toBe('![one](assets/photo.png) ![two](attachment:two)');
+  });
+
+  it('maps package-relative paths back to local attachment references', () => {
+    const paths = new Map([['../assets/photo.png', 'asset-1']]);
+    expect(rewritePortableAttachmentPaths('![one](../assets/photo.png "caption")', paths))
+      .toBe('![one](attachment:asset-1 "caption")');
   });
 });

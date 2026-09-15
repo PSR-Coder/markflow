@@ -69,6 +69,20 @@ function separatorAligns(line: string): Align[] | null {
   });
 }
 
+/** Compare table lines by cell content/alignment, ignoring serializer padding. */
+export function tableLinesEquivalent(before: string, after: string): boolean {
+  const beforeAligns = separatorAligns(before);
+  const afterAligns = separatorAligns(after);
+  if (beforeAligns || afterAligns) {
+    return Boolean(beforeAligns && afterAligns && beforeAligns.length === afterAligns.length
+      && beforeAligns.every((align, index) => align === afterAligns[index]));
+  }
+  const beforeCells = parseRow(before);
+  const afterCells = parseRow(after);
+  return beforeCells.length === afterCells.length
+    && beforeCells.every((cell, index) => cell === afterCells[index]);
+}
+
 function padRows(rows: string[][], cols: number, fill = ''): void {
   for (const row of rows) while (row.length < cols) row.push(fill);
 }

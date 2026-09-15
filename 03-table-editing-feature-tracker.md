@@ -197,11 +197,10 @@ The historical round labels remain useful as change history, but they are not cu
 
 Priority order is based on trust and differentiation, not feature count:
 
-1. Add the Source Diff Before Apply preview for table and multi-cell formatting changes.
-2. Add one-click safe Markdown Confidence repairs backed by that source diff.
+1. Add one-click safe Markdown Confidence repairs backed by the source diff.
+2. Add the renderer/platform comparison described in the product plan.
 3. Add offline network-drop, service-worker update, browser quota, and failed-save tests.
 4. Add mobile/touch insertion and selection behavior before adding more desktop-only table features.
-5. Add the portable document package improvements and platform-render comparison described in the product plan.
 
 ## Horizon 1: Markdown Confidence
 
@@ -209,3 +208,12 @@ Priority order is based on trust and differentiation, not feature count:
 |---|---|---|---:|---|
 | C1 | Confidence diagnostics panel | Shipped, caveat | M3 | Read-only local analyzer reports broken links, missing attachments, malformed tables, unclosed inline marks/code, heading hierarchy and duplicate-anchor warnings, raw HTML, and Mermaid/local-attachment portability warnings. It reports line/column locations; remote URLs are intentionally not fetched. |
 | C2 | One-click safe fixes with source diff | Planned | M1 | Follows the Source Diff Before Apply slice; no automatic repair is offered by the current panel. |
+
+## Horizon 1: Source Diff And Portable Package
+
+| ID | Requirement | Status | Maturity | Current implementation / next proof |
+|---|---|---|---:|---|
+| D1 | Table source diff before Apply | Shipped | M4 | The table editor opens a nested exact line diff before committing any grid change, including bulk formatting, sorting, filtering, and structural operations. Back returns to the grid without applying changes; confirmation uses the existing Apply callback. |
+| D2 | Source toolbar before/after review | Partial | M2 | Main source-editor formatting remains CodeMirror-native and does not show a separate diff modal. Extend the review boundary only for multi-operation source actions where the scope is clear. |
+| D3 | Version history diff before restore | Shipped | M4 | Each snapshot now has a Diff action beside `.md` download and Restore. The nested comparison offers Keep current or Restore this version; dismissing it leaves the History modal open. |
+| P18 | Portable `.markflow.zip` package | Shipped, caveat | M4 | Schema 2 package manifests documents, snapshots, settings, and referenced assets; Markdown under `docs/` uses `../assets/...` paths; import remaps assets back to local IDs and restores settings. Legacy schema 1 `markflow-backup` packages remain readable. |

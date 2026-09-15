@@ -337,6 +337,7 @@ figcaption { margin-top: 7px; text-align: center; color: var(--muted, #767d90); 
 .history-item .hi-meta { flex: 1 1 auto; min-width: 0; }
 .history-item .hi-label { font-weight: 650; font-size: .86rem; }
 .history-item .hi-time { color: var(--muted); font-size: .72rem; }
+.history-item > .btn { flex: 0 0 auto; }
 .storage-health-grid { display: grid; grid-template-columns: 1fr auto; gap: 9px 18px; padding: 4px 0 14px; }
 .storage-health-label { color: var(--text-dim); }
 .confidence-summary { margin: 0; font-size: 1rem; font-weight: 750; }
@@ -347,6 +348,15 @@ figcaption { margin-top: 7px; text-align: center; color: var(--muted, #767d90); 
 .confidence-item-head strong { color: var(--text-dim); font-size: .78rem; text-transform: capitalize; }
 .confidence-item-head span { color: var(--muted); font-size: .72rem; white-space: nowrap; }
 .confidence-item p { margin: 4px 0 0; color: var(--text); font-size: .86rem; line-height: 1.45; }
+.source-diff-code { border: 1px solid var(--border); border-radius: var(--radius-m); overflow: auto; background: var(--code-bg); font-family: var(--font-mono); font-size: .78rem; line-height: 1.55; }
+.source-diff-line { display: grid; grid-template-columns: 24px minmax(max-content, 1fr); min-width: max-content; padding-right: 12px; white-space: pre; }
+.source-diff-line.added { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.source-diff-line.removed { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.source-diff-line.normalized { background: var(--surface); color: var(--text-dim); }
+.source-diff-marker { color: var(--muted); text-align: center; user-select: none; }
+.source-diff-line.added .source-diff-marker { color: var(--ok); font-weight: 800; }
+.source-diff-line.removed .source-diff-marker { color: var(--danger); font-weight: 800; }
+.source-diff-line.normalized .source-diff-marker { color: var(--muted); }
 
 /* ---------- table editor: spreadsheet-style sheet ---------- */
 .te-root { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); /* minmax(0,…) so a very wide table shrinks into .te-scroll's own overflow instead of blowing the implicit track past the modal */ }

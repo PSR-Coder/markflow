@@ -315,16 +315,18 @@ Goal: own the “Markdown without anxiety” category.
    - duplicate heading ID warnings
    - unsupported HTML and portability warnings
    - the current panel reports local line/column findings and does not fetch remote URLs
-   - one-click safe fixes with a source diff remain part of the next Source Diff Before Apply slice
-2. **Source Diff Before Apply**
+   - one-click safe fixes with a source diff remain part of the next repair slice
+2. **Source Diff Before Apply** — table-editor review shipped
    - table editor shows exact Markdown changes before commit
-   - formatting actions can show “before / after” for multi-cell operations
-   - user can cancel without losing grid work
-3. **Portable Document Package**
+   - formatting actions inside the table editor are included in the same review, including multi-cell operations
+   - version history offers a snapshot Diff action with explicit Keep current and Restore this version decisions
+   - the main source toolbar still uses CodeMirror undo/redo directly and does not open a separate diff modal
+   - user can return to the grid without losing uncommitted work
+3. **Portable Document Package** — package schema 2 shipped
    - `.markflow.zip` manifest
    - Markdown files with relative asset paths
    - assets, snapshots, settings, and a version/schema identifier
-   - import into a clean browser profile
+   - import into a clean browser profile, including legacy schema 1 package compatibility
 4. **Renderer Matrix**
    - GitHub/GFM profile
    - CommonMark profile

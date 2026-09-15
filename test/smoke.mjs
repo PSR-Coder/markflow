@@ -38,6 +38,25 @@ await page.getByRole('menuitem', { name: 'Local storage health' }).click();
 ok('storage health reports local counts and quota fields', await page.locator('.modal').last().innerText().then((text) =>
   text.includes('Documents') && text.includes('Estimated quota') && text.includes('Persistent storage')));
 await page.locator('.modal').last().locator('.btn.ghost').click();
+console.log('— version history diff review —');
+await page.locator('.cm-content').click();
+await page.keyboard.press('Control+End');
+await page.keyboard.type('\n\nHistory diff check');
+await page.keyboard.press('Control+s');
+await page.waitForTimeout(350);
+await page.locator('#libraryToolsBtn').click();
+await page.getByRole('menuitem', { name: 'Version history' }).click();
+ok('version history exposes Diff beside download and restore', await page.locator('.history-item').count() >= 1
+  && await page.locator('.history-item .btn', { hasText: 'Diff' }).count() >= 1);
+await page.locator('.history-item .btn', { hasText: 'Diff' }).first().click();
+await page.waitForTimeout(180);
+ok('snapshot diff opens as a nested review modal', await page.locator('.modal').count() === 2
+  && await page.locator('.source-diff-code').isVisible()
+  && await page.locator('.source-diff-line.added, .source-diff-line.removed').count() > 0);
+await page.locator('.modal').last().getByRole('button', { name: 'Keep current' }).click();
+ok('ignoring the diff returns to version history', await page.locator('.modal').count() === 1
+  && await page.locator('.history-item').count() >= 1);
+await page.locator('.modal').last().locator('.modal-x').click();
 ok('accessible top-level controls expose names and state', await page.evaluate(() => {
   const tabs = [...document.querySelectorAll('[role="tab"]')];
   return tabs.length === 3 && tabs.every((tab) => tab.getAttribute('aria-selected') === 'true' || tab.getAttribute('aria-selected') === 'false')
@@ -745,6 +764,11 @@ ok('filter hides non-matching body rows (view-only)', await page.evaluate(() =>
   [1, 2, 3, 4].filter((r) => document.querySelector(`tbody tr[data-r="${r}"]`).style.display !== 'none').length === 1));
 ok('filter chip announces the state', await page.locator('.te-chip').isVisible());
 await page.locator('.modal-foot .btn.primary').click(); // Apply with the filter STILL active
+await page.waitForTimeout(180);
+ok('source diff review opens before table changes are committed', await page.locator('.modal').count() === 2
+  && await page.locator('.source-diff').isVisible()
+  && await page.locator('.source-diff-line.added, .source-diff-line.removed').count() > 0);
+await page.locator('.modal').last().locator('.btn.primary').click();
 await page.waitForTimeout(500);
 const srcR4 = await page.locator('.cm-content').innerText();
 ok('Apply writes EVERY row — the filter never touches the document', srcR4.includes('Feature') && /\|\s*10\s*\|/.test(srcR4) && /\|\s*1\s*\|/.test(srcR4) && /\|\s*3\s*\|/.test(srcR4));

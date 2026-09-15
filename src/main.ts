@@ -18,6 +18,7 @@ import { installImageHandlers, attachmentIds, releaseAssetUrls } from './core/im
 import { installTablePaste } from './core/clipboard';
 import { findAllTables } from './core/tables';
 import { analyzeMarkdown, type MarkdownDiagnostic } from './core/diagnostics';
+import { buildLineDiff } from './core/textDiff';
 import { openTableEditorByIndex } from './tableEditor';
 import {
   exportMarkdown, exportBackupZip, exportStandaloneHtml,
@@ -365,6 +366,64 @@ function refreshDocList(): void {
 
 // ---------------- history ----------------
 
+function buildDiffBody(before: string, after: string, emptyMessage: string): HTMLElement {
+  const body = document.createElement('div');
+  const diff = buildLineDiff(before, after);
+  const added = diff.filter((line) => line.kind === 'added').length;
+  const removed = diff.filter((line) => line.kind === 'removed').length;
+  const summary = document.createElement('p');
+  summary.className = 'muted-note';
+  summary.textContent = added || removed
+    ? `${added} line${added === 1 ? '' : 's'} added · ${removed} line${removed === 1 ? '' : 's'} removed`
+    : emptyMessage;
+  body.appendChild(summary);
+
+  const code = document.createElement('div');
+  code.className = 'source-diff-code';
+  for (const line of diff) {
+    const row = document.createElement('div');
+    row.className = `source-diff-line ${line.kind}`;
+    const marker = document.createElement('span');
+    marker.className = 'source-diff-marker';
+    marker.textContent = line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' ';
+    marker.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('code');
+    text.textContent = line.text || ' ';
+    row.append(marker, text);
+    code.appendChild(row);
+  }
+  if (!diff.length) {
+    const row = document.createElement('div');
+    row.className = 'source-diff-line context';
+    row.textContent = ' '; // Keep an empty document review surface visible.
+    code.appendChild(row);
+  }
+  body.appendChild(code);
+  return body;
+}
+
+function openSnapshotDiff(snapshot: { content: string; label: string; ts: number }, historyHandle: { close: () => void }): void {
+  const body = buildDiffBody(currentText, snapshot.content, 'This snapshot matches the current document.');
+  const keep = document.createElement('button');
+  keep.type = 'button';
+  keep.className = 'btn ghost';
+  keep.textContent = 'Keep current';
+  const restore = document.createElement('button');
+  restore.type = 'button';
+  restore.className = 'btn primary';
+  restore.textContent = 'Restore this version';
+  const review = openModal({ title: 'Compare with snapshot', body, foot: [keep, restore], wide: true });
+  keep.addEventListener('click', review.close);
+  restore.addEventListener('click', async () => {
+    if (!currentDoc) return;
+    await addSnapshot(currentDoc.id, 'pre-restore', currentText, countWords(currentText));
+    review.close();
+    historyHandle.close();
+    await loadDoc({ ...currentDoc, content: snapshot.content });
+    toast(`Restored version from ${new Date(snapshot.ts).toLocaleTimeString()}.`, 'ok');
+  });
+}
+
 function openHistory(): void {
   if (!currentDoc) return;
   void listSnapshots(currentDoc.id).then((snaps) => {
@@ -389,6 +448,11 @@ function openHistory(): void {
         await loadDoc({ ...currentDoc!, content: snap.content });
         toast(`Restored version from ${when.toLocaleTimeString()}.`, 'ok');
       });
+      const diff = document.createElement('button');
+      diff.className = 'btn small ghost';
+      diff.textContent = 'Diff';
+      diff.title = 'Compare this snapshot with the current document';
+      diff.addEventListener('click', () => openSnapshotDiff(snap, handle));
       const dl = document.createElement('button');
       dl.className = 'btn small ghost';
       dl.textContent = '.md';
@@ -399,7 +463,7 @@ function openHistory(): void {
         a.download = `${slug(currentDoc!.title)}-${when.toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`;
         a.click();
       });
-      item.append(meta, dl, restore);
+      item.append(meta, diff, dl, restore);
       wrap.appendChild(item);
     }
     const handle = openModal({ title: `History — ${currentDoc!.title}`, body: wrap });
@@ -667,7 +731,12 @@ function wireTopBar(): void {
       const result = await importBackupZip(file);
       docs = await listDocs();
       refreshDocList();
-      toast(`Imported ${result.documents} document(s), ${result.snapshots} snapshot(s), and ${result.assets} attachment(s).${result.missingAssets ? ` ${result.missingAssets} attachment reference(s) were missing.` : ''}`, result.missingAssets ? 'info' : 'ok', 5200);
+      if (result.settingsRestored) {
+        setTheme(settings.theme);
+        setMode(settings.mode);
+        $('#sidebar').classList.toggle('hidden', !settings.sidebarOpen);
+      }
+      toast(`Imported ${result.documents} document(s), ${result.snapshots} snapshot(s), and ${result.assets} attachment(s).${result.missingAssets ? ` ${result.missingAssets} attachment reference(s) were missing.` : ''}${result.settingsRestored ? ' Settings restored.' : ''}`, result.missingAssets ? 'info' : 'ok', 5200);
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not import this backup.', 'err', 5200);
     }
@@ -676,7 +745,7 @@ function wireTopBar(): void {
   libraryToolsBtn.addEventListener('click', () => {
     popMenu(libraryToolsBtn, [
       { label: 'Version history', onClick: openHistory },
-      { label: 'Backup all documents', onClick: async () => { await exportBackupZip(await listDocs()); } },
+      { label: 'Export portable package', onClick: async () => { await exportBackupZip(await listDocs()); } },
       { label: 'Import Markdown or MarkFlow ZIP', onClick: importBackup },
       { label: 'Review attachment storage', onClick: openAssetManager },
       { label: 'Local storage health', onClick: openStorageHealth },

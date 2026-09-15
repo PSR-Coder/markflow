@@ -38,3 +38,13 @@ export function buildPortableAttachmentPaths(assets: readonly AttachmentName[]):
 export function rewriteAttachmentPaths(markdown: string, paths: ReadonlyMap<string, string>): string {
   return markdown.replace(ATTACHMENT_RE, (full, id: string) => paths.get(id) ?? full);
 }
+
+/** Convert portable Markdown asset paths back to local attachment references on import. */
+export function rewritePortableAttachmentPaths(markdown: string, attachmentIdsByPath: ReadonlyMap<string, string>): string {
+  let next = markdown;
+  for (const [path, id] of attachmentIdsByPath) {
+    const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    next = next.replace(new RegExp(`(!?\\[[^\\]]*\\]\\()${escapedPath}(?=(?:\\s+[^)]*)?\\))`, 'g'), `$1attachment:${id}`);
+  }
+  return next;
+}
