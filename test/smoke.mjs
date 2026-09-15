@@ -100,7 +100,27 @@ await page.getByRole('button', { name: 'Maximize or restore dialog' }).click();
 ok('comparison modal can maximize', await page.locator('.modal.modal-max').count() === 1);
 await page.getByRole('button', { name: 'Restore dialog size' }).click();
 await page.locator('.modal').last().getByRole('button', { name: 'Unified' }).click();
-await page.locator('.modal').last().getByRole('button', { name: 'Keep current' }).click();
+await page.locator('.modal').last().getByRole('button', { name: 'Side by side' }).click();
+ok('side-by-side mode exposes historical row selection and copy controls', await page.locator('.side-diff-select').count() > 0
+  && await page.locator('.side-diff-copy').count() > 0
+  && await page.locator('.comparison-controls button', { hasText: 'Copy selected' }).isVisible());
+const copyableRow = page.locator('.side-diff-line:has(.side-diff-copy)').first();
+const beforeCopy = await page.locator('.cm-content').innerText();
+ok('unchanged rows do not expose selection checkboxes', await page.locator('.side-diff-line.context .side-diff-select, .side-diff-line.normalized .side-diff-select').count() === 0);
+ok('changed rows show inline text-level diff styling', await page.locator('.side-diff-inline-removed, .side-diff-inline-added').count() > 0);
+await copyableRow.locator('.side-diff-select').check();
+ok('Copy selected stays disabled until a historical row is selected', await page.locator('.comparison-controls button', { hasText: 'Copy selected' }).isEnabled());
+await page.locator('.comparison-controls button', { hasText: 'Copy selected' }).click();
+await page.waitForTimeout(180);
+ok('copying a historical row updates the editor and reports the operation', await page.locator('.cm-content').innerText() !== beforeCopy
+  && (await page.locator('.comparison-copy-status').innerText()).includes('Copied'));
+await page.locator('.comparison-controls button', { hasText: 'Undo' }).click();
+await page.waitForTimeout(120);
+ok('diff Undo reverses the copy as one editor operation', await page.locator('.cm-content').innerText() === beforeCopy);
+await page.locator('.comparison-controls button', { hasText: 'Redo' }).click();
+await page.waitForTimeout(120);
+ok('diff Redo reapplies the copy operation', await page.locator('.cm-content').innerText() !== beforeCopy);
+await page.locator('.modal').last().getByRole('button', { name: 'Keep current editor' }).click();
 ok('ignoring the diff returns to version history', await page.locator('.modal').count() === 1
   && await page.locator('.history-item').count() >= 1);
 await page.locator('.modal').last().locator('.modal-x').click();

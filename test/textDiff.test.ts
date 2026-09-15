@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLineDiff, buildSideBySideDiff } from '../src/core/textDiff';
+import { buildLineDiff, buildSideBySideDiff, copySelectedSideBySideLines } from '../src/core/textDiff';
 import { tableLinesEquivalent } from '../src/core/tables';
 
 describe('source line diff', () => {
@@ -50,5 +50,18 @@ describe('source line diff', () => {
       { kind: 'context', left: { line: 1, text: 'one' }, right: { line: 1, text: 'one' } },
       { kind: 'changed', left: { line: 2, text: 'two' }, right: { line: 2, text: 'three' } },
     ]);
+  });
+
+  it('copies selected historical rows into current replacements and insertions', () => {
+    const rows = [
+      { id: 'same', kind: 'context' as const, left: { line: 1, text: 'one' }, right: { line: 1, text: 'one' } },
+      { id: 'changed', kind: 'changed' as const, left: { line: 2, text: 'old' }, right: { line: 2, text: 'new' } },
+      { id: 'removed', kind: 'removed' as const, left: { line: 3, text: 'insert me' } },
+    ];
+    expect(copySelectedSideBySideLines('one\nnew', rows, new Set(['changed', 'removed']))).toEqual({
+      text: 'one\nold\ninsert me',
+      replaced: 1,
+      inserted: 1,
+    });
   });
 });

@@ -11,6 +11,16 @@ export interface SideBySideLine {
   right?: { line: number; text: string };
 }
 
+export interface SelectableSideBySideLine extends SideBySideLine {
+  id: string;
+}
+
+export interface CopySideBySideResult {
+  text: string;
+  replaced: number;
+  inserted: number;
+}
+
 export interface LineDiffOptions {
   /** Treat equivalent source representations as neutral context. */
   equivalent?: (before: string, after: string) => boolean;
@@ -89,4 +99,51 @@ export function buildSideBySideDiff(before: string, after: string, options: Line
     }
   }
   return rows;
+}
+
+/** Copy selected historical rows into the current source, preserving row order. */
+export function copySelectedSideBySideLines(
+  source: string,
+  rows: readonly SelectableSideBySideLine[],
+  selectedIds: ReadonlySet<string>,
+): CopySideBySideResult {
+  const lines = source.split('\n');
+  const replacements = new Map<number, string>();
+  const insertions = new Map<number, string[]>();
+  const selected = rows.filter((row) => selectedIds.has(row.id) && row.left);
+
+  for (const row of selected) {
+    if (row.right) {
+      const index = row.right.line - 1;
+      if (lines[index] !== row.left!.text) replacements.set(index, row.left!.text);
+      continue;
+    }
+    const rowIndex = rows.indexOf(row);
+    let insertionIndex = lines.length;
+    for (let previous = rowIndex - 1; previous >= 0; previous--) {
+      if (rows[previous].right) {
+        insertionIndex = rows[previous].right!.line;
+        break;
+      }
+    }
+    if (insertionIndex === lines.length) {
+      for (let next = rowIndex + 1; next < rows.length; next++) {
+        if (rows[next].right) {
+          insertionIndex = Math.max(0, rows[next].right!.line - 1);
+          break;
+        }
+      }
+    }
+    const group = insertions.get(insertionIndex) ?? [];
+    group.push(row.left!.text);
+    insertions.set(insertionIndex, group);
+  }
+
+  for (const [index, text] of [...replacements].sort(([a], [b]) => b - a)) lines[index] = text;
+  for (const [index, values] of [...insertions].sort(([a], [b]) => b - a)) lines.splice(index, 0, ...values);
+  return {
+    text: lines.join('\n'),
+    replaced: replacements.size,
+    inserted: [...insertions.values()].reduce((total, values) => total + values.length, 0),
+  };
 }

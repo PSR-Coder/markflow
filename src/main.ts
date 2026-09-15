@@ -3,6 +3,7 @@ import './style.css';
 import 'katex/dist/katex.min.css';
 
 import { EditorView, keymap } from '@codemirror/view';
+import { redo, undo, redoDepth, undoDepth } from '@codemirror/commands';
 import { Prec, StateEffect } from '@codemirror/state';
 import { createEditor, setEditorText } from './editor';
 import { createRenderer, postRender } from './core/renderer';
@@ -18,7 +19,7 @@ import { installImageHandlers, attachmentIds, releaseAssetUrls } from './core/im
 import { installTablePaste } from './core/clipboard';
 import { findAllTables, tableLinesEquivalent } from './core/tables';
 import { analyzeMarkdown, type MarkdownDiagnostic } from './core/diagnostics';
-import { buildLineDiff, buildSideBySideDiff, type DiffLine, type SideBySideLine } from './core/textDiff';
+import { buildLineDiff, buildSideBySideDiff, copySelectedSideBySideLines, type DiffLine, type SideBySideLine } from './core/textDiff';
 import { openTableEditorByIndex } from './tableEditor';
 import {
   exportMarkdown, exportBackupZip, exportStandaloneHtml,
@@ -509,27 +510,78 @@ function appendUnifiedRows(
   }
 }
 
-function appendSideBySideRow(container: HTMLElement, line: StructuredSideRow): void {
+function appendSideBySideRow(
+  container: HTMLElement,
+  line: StructuredSideRow,
+  selectedIds: ReadonlySet<string>,
+  onSelect: (id: string, selected: boolean) => void,
+  onCopy: (id: string) => void,
+): void {
   const row = document.createElement('div');
   row.className = `side-diff-line ${line.kind}`;
   row.dataset.rowId = line.id;
   if (line.section !== null) row.dataset.sectionId = `change-${line.section + 1}`;
+  row.classList.toggle('side-diff-selected', selectedIds.has(line.id));
   const sides = [line.left, line.right];
   sides.forEach((side, index) => {
     const pane = document.createElement('div');
-    pane.className = 'side-diff-pane';
+    const hasHistorySelection = index === 0 && Boolean(line.left) && line.changed;
+    pane.className = `side-diff-pane${hasHistorySelection ? ' side-diff-history' : ''}`;
     const marker = document.createElement('span');
     marker.className = 'side-diff-marker';
     marker.textContent = line.kind === 'changed' ? (index === 0 ? '−' : '+')
       : line.kind === 'removed' && index === 0 ? '−'
         : line.kind === 'added' && index === 1 ? '+' : ' ';
     marker.setAttribute('aria-label', marker.textContent === '+' ? 'Added line' : marker.textContent === '−' ? 'Removed line' : 'Unchanged line');
+    if (hasHistorySelection) {
+      const select = document.createElement('input');
+      select.type = 'checkbox';
+      select.className = 'side-diff-select';
+      select.checked = selectedIds.has(line.id);
+      select.disabled = !line.left;
+      select.setAttribute('aria-label', line.left ? `Select historical line ${line.left.line}` : 'No historical line');
+      select.addEventListener('change', () => onSelect(line.id, select.checked));
+      pane.append(marker, select);
+    } else {
+      pane.append(marker);
+    }
     const number = document.createElement('span');
     number.className = 'side-diff-number';
     number.textContent = side ? String(side.line) : '';
     const text = document.createElement('code');
-    text.textContent = side?.text || ' ';
-    pane.append(marker, number, text);
+    const appendText = (value: string, className?: string) => {
+      if (!value) return;
+      if (!className) { text.appendChild(document.createTextNode(value)); return; }
+      const span = document.createElement('span');
+      span.className = className;
+      span.textContent = value;
+      text.appendChild(span);
+    };
+    if (line.kind === 'changed' && line.left && line.right) {
+      const sourceText = index === 0 ? line.left.text : line.right.text;
+      const comparisonText = index === 0 ? line.right.text : line.left.text;
+      let prefix = 0;
+      while (prefix < sourceText.length && prefix < comparisonText.length && sourceText[prefix] === comparisonText[prefix]) prefix++;
+      let suffix = 0;
+      while (suffix < sourceText.length - prefix && suffix < comparisonText.length - prefix
+        && sourceText[sourceText.length - 1 - suffix] === comparisonText[comparisonText.length - 1 - suffix]) suffix++;
+      appendText(sourceText.slice(0, prefix));
+      appendText(sourceText.slice(prefix, sourceText.length - suffix), index === 0 ? 'side-diff-inline-removed' : 'side-diff-inline-added');
+      appendText(suffix ? sourceText.slice(sourceText.length - suffix) : '');
+    } else {
+      appendText(side?.text || '', line.kind === 'removed' ? 'side-diff-inline-removed' : line.kind === 'added' ? 'side-diff-inline-added' : undefined);
+    }
+    pane.append(number, text);
+    if (index === 0 && line.left && line.changed) {
+      const copy = document.createElement('button');
+      copy.type = 'button';
+      copy.className = 'side-diff-copy';
+      copy.textContent = '→';
+      copy.title = 'Copy this historical line to the current editor';
+      copy.setAttribute('aria-label', `Copy historical line ${line.left.line} to current editor`);
+      copy.addEventListener('click', () => onCopy(line.id));
+      pane.appendChild(copy);
+    }
     row.appendChild(pane);
   });
   container.appendChild(row);
@@ -542,6 +594,9 @@ function appendSideBySideRows(
   expandedContext: Set<string>,
   showUnchanged: boolean,
   onContextChange: (groupId: string, expanded: boolean) => void,
+  selectedIds: ReadonlySet<string>,
+  onSelect: (id: string, selected: boolean) => void,
+  onCopy: (id: string) => void,
 ): void {
   let index = 0;
   while (index < rows.length) {
@@ -554,7 +609,7 @@ function appendSideBySideRows(
       while (index < rows.length && (rows[index].kind === 'context' || rows[index].kind === 'normalized')) index++;
       const group = rows.slice(start, index);
       const render = document.createElement('div');
-      const renderGroup = () => group.forEach((line) => appendSideBySideRow(render, line));
+      const renderGroup = () => group.forEach((line) => appendSideBySideRow(render, line, selectedIds, onSelect, onCopy));
       const groupId = `context-${group[0].id}-${group[group.length - 1].id}`;
       const expanded = showUnchanged || expandedContext.has(groupId);
       if (filter === 'all' && group.length > 4 && !expanded) {
@@ -580,24 +635,26 @@ function appendSideBySideRows(
       }
       continue;
     }
-    appendSideBySideRow(container, rows[index++]);
+    appendSideBySideRow(container, rows[index++], selectedIds, onSelect, onCopy);
   }
 }
 
 function buildComparisonBody(before: string, after: string): HTMLElement {
   const body = document.createElement('div');
   body.className = 'comparison-body';
-  const structured = buildStructuredComparison(before, after);
+  let currentSource = after;
+  let structured = buildStructuredComparison(before, currentSource);
   settings.comparisonSplit = Math.max(.3, Math.min(.7, Number(settings.comparisonSplit) || .5));
-  const diff = structured.unified;
+  const initialDiff = structured.unified;
   const automatic = settings.comparisonMode === 'auto';
-  let mode: ComparisonMode = automatic && comparisonIsLarge(before, after, diff) ? 'side-by-side'
+  let mode: ComparisonMode = automatic && comparisonIsLarge(before, currentSource, initialDiff) ? 'side-by-side'
     : settings.comparisonMode === 'side-by-side' ? 'side-by-side' : 'unified';
   let showUnchanged = false;
   const expandedContext = new Set<string>();
+  const selectedHistoryIds = new Set<string>();
   const summary = document.createElement('p');
   summary.className = 'muted-note comparison-summary';
-  summary.textContent = comparisonSummary(diff) + (automatic && mode === 'side-by-side' ? ' · Side-by-side selected for this larger change.' : '');
+  summary.textContent = comparisonSummary(structured.unified) + (automatic && mode === 'side-by-side' ? ' · Side-by-side selected for this larger change.' : '');
   body.appendChild(summary);
   const controls = document.createElement('div');
   controls.className = 'comparison-controls';
@@ -646,6 +703,48 @@ function buildComparisonBody(before: string, after: string): HTMLElement {
   };
   const unified = toggle('unified', 'Unified');
   const side = toggle('side-by-side', 'Side by side');
+  const copySelected = document.createElement('button');
+  copySelected.type = 'button';
+  copySelected.className = 'btn small ghost';
+  copySelected.textContent = 'Copy selected →';
+  copySelected.title = 'Copy selected historical lines into the current editor';
+  controls.appendChild(copySelected);
+  const copyStatus = document.createElement('span');
+  copyStatus.className = 'comparison-copy-status muted-note';
+  controls.appendChild(copyStatus);
+  const undoButton = document.createElement('button');
+  undoButton.type = 'button';
+  undoButton.className = 'btn small ghost';
+  undoButton.textContent = 'Undo';
+  undoButton.title = 'Undo the last copy/edit in the current editor';
+  undoButton.addEventListener('click', () => {
+    if (!undo(view)) {
+      copyStatus.textContent = 'Nothing to undo.';
+      return;
+    }
+    currentSource = view.state.doc.toString();
+    structured = buildStructuredComparison(before, currentSource);
+    selectedHistoryIds.clear();
+    copyStatus.textContent = 'Undid the last comparison edit.';
+    render();
+  });
+  const redoButton = document.createElement('button');
+  redoButton.type = 'button';
+  redoButton.className = 'btn small ghost';
+  redoButton.textContent = 'Redo';
+  redoButton.title = 'Redo the last copy/edit in the current editor';
+  redoButton.addEventListener('click', () => {
+    if (!redo(view)) {
+      copyStatus.textContent = 'Nothing to redo.';
+      return;
+    }
+    currentSource = view.state.doc.toString();
+    structured = buildStructuredComparison(before, currentSource);
+    selectedHistoryIds.clear();
+    copyStatus.textContent = 'Redid the comparison edit.';
+    render();
+  });
+  controls.append(undoButton, redoButton);
   const nav = document.createElement('span');
   nav.className = 'comparison-nav';
   const prev = document.createElement('button');
@@ -675,11 +774,32 @@ function buildComparisonBody(before: string, after: string): HTMLElement {
     settings.comparisonSplit = value;
     sideShell.style.setProperty('--side-split', `${value * 100}%`);
   };
+  const copyRows = (ids: ReadonlySet<string>) => {
+    const result = copySelectedSideBySideLines(currentSource, structured.sideBySide, ids);
+    if (result.text === currentSource) {
+      copyStatus.textContent = 'No changes to copy.';
+      return;
+    }
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: result.text } });
+    currentSource = result.text;
+    structured = buildStructuredComparison(before, currentSource);
+    selectedHistoryIds.clear();
+    const parts = [];
+    if (result.replaced) parts.push(`${result.replaced} line${result.replaced === 1 ? '' : 's'} replaced`);
+    if (result.inserted) parts.push(`${result.inserted} line${result.inserted === 1 ? '' : 's'} inserted`);
+    copyStatus.textContent = `Copied ${parts.join(' · ')} from the historical version.`;
+    render();
+  };
+  copySelected.addEventListener('click', () => copyRows(selectedHistoryIds));
   const render = () => {
     filterButtons.forEach((button, index) => button.classList.toggle('active', ['all', 'diff', 'same'][index] === filter));
     unchangedToggle.textContent = showUnchanged ? 'Hide unchanged' : 'Show unchanged';
     unchangedToggle.classList.toggle('active', showUnchanged);
     unchangedToggle.disabled = filter !== 'all';
+    copySelected.hidden = mode !== 'side-by-side';
+    copySelected.disabled = mode !== 'side-by-side' || selectedHistoryIds.size === 0;
+    undoButton.disabled = undoDepth(view.state) === 0;
+    redoButton.disabled = redoDepth(view.state) === 0;
     unified.classList.toggle('active', mode === 'unified');
     side.classList.toggle('active', mode === 'side-by-side');
     viewport.innerHTML = '';
@@ -708,7 +828,11 @@ function buildComparisonBody(before: string, after: string): HTMLElement {
         if (expanded) expandedContext.add(groupId);
         else expandedContext.delete(groupId);
         render();
-      });
+      }, selectedHistoryIds, (id, selected) => {
+        if (selected) selectedHistoryIds.add(id);
+        else selectedHistoryIds.delete(id);
+        render();
+      }, (id) => copyRows(new Set([id])));
       shell.appendChild(code);
       const divider = document.createElement('button');
       divider.type = 'button'; divider.className = 'side-diff-divider'; divider.title = 'Resize comparison panes'; divider.setAttribute('aria-label', 'Resize comparison panes');
@@ -757,7 +881,7 @@ function openSnapshotDiff(snapshot: { content: string; label: string; ts: number
   const keep = document.createElement('button');
   keep.type = 'button';
   keep.className = 'btn ghost';
-  keep.textContent = 'Keep current';
+  keep.textContent = 'Keep current editor';
   const restore = document.createElement('button');
   restore.type = 'button';
   restore.className = 'btn primary';

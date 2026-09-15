@@ -377,14 +377,23 @@ figcaption { margin-top: 7px; text-align: center; color: var(--muted, #767d90); 
 .side-diff-head strong { padding: 7px 10px; }
 .side-diff-head strong + strong, .side-diff-pane + .side-diff-pane { border-left: 1px solid var(--border); }
 .side-diff-pane { display: grid; grid-template-columns: 24px 44px minmax(0, 1fr); min-height: 24px; align-items: start; padding-right: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.side-diff-history { grid-template-columns: 24px 24px 44px minmax(0, 1fr) 28px; }
+.side-diff-selected { outline: 1px solid var(--accent); outline-offset: -1px; }
+.side-diff-select { align-self: start; margin: 4px 5px 0 0; accent-color: var(--accent); }
+.side-diff-copy { align-self: start; margin: 2px 0 0 4px; border: 0; border-radius: var(--radius-s); background: transparent; color: var(--accent); font: inherit; font-weight: 800; cursor: pointer; padding: 2px 4px; }
+.side-diff-copy:hover, .side-diff-copy:focus-visible { background: var(--accent-soft); }
+.comparison-copy-status { margin-left: 2px; max-width: 360px; }
+.side-diff-inline-removed { color: var(--danger); font-weight: 700; }
+.side-diff-inline-added { color: var(--ok); font-weight: 700; }
 .side-diff-marker { color: var(--muted); text-align: center; user-select: none; }
 .side-diff-line.added .side-diff-pane:last-child .side-diff-marker, .side-diff-line.changed .side-diff-pane:last-child .side-diff-marker { color: var(--ok); font-weight: 800; }
 .side-diff-line.removed .side-diff-pane:first-child .side-diff-marker, .side-diff-line.changed .side-diff-pane:first-child .side-diff-marker { color: var(--danger); font-weight: 800; }
 .side-diff-number { color: var(--muted); text-align: right; padding: 2px 10px 2px 0; user-select: none; }
 .side-diff-pane code { padding: 2px 0; }
 .side-diff-line.context { color: var(--text-dim); }
-.side-diff-line.added .side-diff-pane:last-child, .side-diff-line.changed .side-diff-pane:last-child { background: color-mix(in srgb, var(--ok) 14%, transparent); }
-.side-diff-line.removed .side-diff-pane:first-child, .side-diff-line.changed .side-diff-pane:first-child { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.side-diff-line.added .side-diff-pane:last-child { background: color-mix(in srgb, var(--ok) 8%, transparent); }
+.side-diff-line.removed .side-diff-pane:first-child { background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.side-diff-line.changed .side-diff-pane { background: transparent; }
 .side-diff-line.added .side-diff-pane:first-child, .side-diff-line.removed .side-diff-pane:last-child { background: color-mix(in srgb, var(--muted) 8%, transparent); }
 .side-diff-divider { position: absolute; top: 0; bottom: 0; left: var(--side-split, 50%); width: 8px; transform: translateX(-4px); z-index: 3; cursor: col-resize; background: transparent; border: 0; padding: 0; }
 .side-diff-divider::after { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: var(--border-strong); }
@@ -547,4 +556,5 @@ table.te-grid { border-collapse: separate; border-spacing: 0; min-width: 100%; }
   .side-diff-divider { display: none; }
   .side-diff-shell { overflow-x: hidden; }
   .side-diff-pane { min-width: 0; }
+  .side-diff-history { grid-template-columns: 24px 24px 44px minmax(0, 1fr) 28px; }
 }

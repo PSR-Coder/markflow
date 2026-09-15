@@ -322,6 +322,7 @@ Goal: own the “Markdown without anxiety” category.
    - version history offers a snapshot Diff action with explicit Keep current and Restore this version decisions
    - version history supports unified and side-by-side comparison, automatic large-change selection, line numbers, synchronized scrolling, and collapsible unchanged context
    - comparison panes wrap long Markdown lines, support responsive stacking, a draggable split, maximize/restore, sticky controls, All/Diff/Same filtering, Prev/Next diff navigation, and persistent unchanged-context expansion until explicitly hidden
+   - side-by-side history review supports selecting historical rows, copying selected history into the current editor, and one-way per-row copy arrows; each copy recomputes the live diff and remains undoable through the editor
    - snapshots matching the live editor show as Current version with download only; ordinary and pre-restore snapshots deduplicate against the newest persisted content
    - the main source toolbar still uses CodeMirror undo/redo directly and does not open a separate diff modal
    - user can return to the grid without losing uncommitted work
