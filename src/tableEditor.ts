@@ -1079,7 +1079,7 @@ function openEditorUI(getModel: () => Model, onApply: ApplyFn, title: string, or
     syncModel();
     const nextSource = serializeTable(model.rows, model.aligns);
     const diff = buildLineDiff(originalSource, nextSource, { equivalent: tableLinesEquivalent });
-    const body = el('div', 'source-diff');
+    const body = el('div', 'source-diff table-source-diff');
     const summary = el('p', 'muted-note');
     const normalizedLines = diff.filter((line) => line.kind === 'normalized').length;
     const addedLines = diff.filter((line) => line.kind === 'added').length;
@@ -1089,7 +1089,7 @@ function openEditorUI(getModel: () => Model, onApply: ApplyFn, title: string, or
       ? 'No Markdown changes are pending.'
       : `${changedLines} content line${changedLines === 1 ? '' : 's'} changed. Review the exact Markdown change before it reaches the document.${normalizedLines ? ` ${normalizedLines} line${normalizedLines === 1 ? '' : 's'} are shown as neutral context because only table padding was re-aligned.` : ''}`;
     body.appendChild(summary);
-    const code = el('div', 'source-diff-code');
+    const code = el('div', 'source-diff-code table-source-diff-code');
     for (const line of diff) {
       const row = el('div', `source-diff-line ${line.kind}`);
       const marker = el('span', 'source-diff-marker');

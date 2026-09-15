@@ -8,7 +8,7 @@ import { createEditor, setEditorText } from './editor';
 import { createRenderer, postRender } from './core/renderer';
 import {
   listDocs, createDoc, saveDoc, deleteDoc, duplicateDoc, deleteAssets, listOrphanAssets,
-  addSnapshot, listSnapshots, getStorageHealth, requestPersistentStorage, getAsset, type Doc,
+  addSnapshotIfChanged, createRestoreCheckpoint, listSnapshots, getStorageHealth, requestPersistentStorage, getAsset, type Doc,
 } from './core/storage';
 import { toast, openModal, formDialog, confirmDialog, popMenu, debounce, timeAgo, countWords } from './ui';
 import { settings, saveSettings, type ViewMode, type ThemeName } from './state';
@@ -16,9 +16,9 @@ import { buildToolbar, toggleInline, insertLink, refreshToolbarContext } from '.
 import { renderDocList } from './library';
 import { installImageHandlers, attachmentIds, releaseAssetUrls } from './core/images';
 import { installTablePaste } from './core/clipboard';
-import { findAllTables } from './core/tables';
+import { findAllTables, tableLinesEquivalent } from './core/tables';
 import { analyzeMarkdown, type MarkdownDiagnostic } from './core/diagnostics';
-import { buildLineDiff } from './core/textDiff';
+import { buildLineDiff, buildSideBySideDiff, type DiffLine, type SideBySideLine } from './core/textDiff';
 import { openTableEditorByIndex } from './tableEditor';
 import {
   exportMarkdown, exportBackupZip, exportStandaloneHtml,
@@ -45,7 +45,6 @@ const md = createRenderer();
 let view: EditorView;
 let currentDoc: Doc | null = null;
 let currentText = '';
-let lastSnapshotText: string | null = null;
 let docs: Doc[] = [];
 
 // ---------------- rendering ----------------
@@ -276,13 +275,12 @@ function updatePwaStatus(message: string): void {
 
 async function takeSnapshot(label: string, notify = true): Promise<void> {
   if (!currentDoc) return;
-  if (currentText === lastSnapshotText) {
-    if (notify) toast('Nothing new to snapshot.', 'info');
-    return;
-  }
   try {
-    await addSnapshot(currentDoc.id, label, currentText, countWords(currentText));
-    lastSnapshotText = currentText;
+    const created = await addSnapshotIfChanged(currentDoc.id, label, currentText, countWords(currentText));
+    if (!created) {
+      if (notify) toast('Nothing new to snapshot.', 'info');
+      return;
+    }
     snapshotFailureNotified = false;
     if (notify) toast(`Snapshot “${label}” pinned to history.`, 'ok');
   } catch (error) {
@@ -295,7 +293,7 @@ async function takeSnapshot(label: string, notify = true): Promise<void> {
 
 // every 3 minutes: quiet auto-snapshot when content changed
 setInterval(() => {
-  if (currentDoc && currentText !== lastSnapshotText && currentText.trim()) {
+  if (currentDoc && currentText.trim()) {
     void takeSnapshot('auto', false);
   }
 }, 3 * 60 * 1000);
@@ -305,7 +303,6 @@ setInterval(() => {
 async function loadDoc(doc: Doc): Promise<void> {
   currentDoc = doc;
   currentText = doc.content;
-  lastSnapshotText = currentText;
   snapshotFailureNotified = false;
   saveRetryPending = false;
   saveRetryBtn.hidden = true;
@@ -366,44 +363,397 @@ function refreshDocList(): void {
 
 // ---------------- history ----------------
 
-function buildDiffBody(before: string, after: string, emptyMessage: string): HTMLElement {
-  const body = document.createElement('div');
-  const diff = buildLineDiff(before, after);
+type ComparisonMode = 'unified' | 'side-by-side';
+type ComparisonFilter = 'all' | 'diff' | 'same';
+
+interface StructuredUnifiedRow extends DiffLine {
+  id: string;
+  changed: boolean;
+  section: number | null;
+}
+
+interface StructuredSideRow extends SideBySideLine {
+  id: string;
+  changed: boolean;
+  section: number | null;
+}
+
+interface StructuredComparison {
+  unified: StructuredUnifiedRow[];
+  sideBySide: StructuredSideRow[];
+  sectionIds: string[];
+}
+
+function comparisonIsLarge(before: string, after: string, diff: DiffLine[]): boolean {
+  const changed = diff.filter((line) => line.kind === 'added' || line.kind === 'removed').length;
+  return changed >= 8 || Math.max(before.split('\n').length, after.split('\n').length) >= 120;
+}
+
+function comparisonSummary(diff: DiffLine[]): string {
   const added = diff.filter((line) => line.kind === 'added').length;
   const removed = diff.filter((line) => line.kind === 'removed').length;
-  const summary = document.createElement('p');
-  summary.className = 'muted-note';
-  summary.textContent = added || removed
-    ? `${added} line${added === 1 ? '' : 's'} added · ${removed} line${removed === 1 ? '' : 's'} removed`
-    : emptyMessage;
-  body.appendChild(summary);
+  let tableRows = 0;
+  for (let i = 0; i + 1 < diff.length; i++) {
+    if (diff[i].kind === 'removed' && diff[i + 1].kind === 'added'
+      && diff[i].text.trim().startsWith('|') && diff[i].text.trim().endsWith('|')
+      && diff[i + 1].text.trim().startsWith('|') && diff[i + 1].text.trim().endsWith('|')) tableRows++;
+  }
+  if (!added && !removed) return 'This snapshot matches the current document.';
+  return `${added} line${added === 1 ? '' : 's'} added · ${removed} line${removed === 1 ? '' : 's'} removed${tableRows ? ` · ${tableRows} table row${tableRows === 1 ? '' : 's'} changed` : ''}`;
+}
 
-  const code = document.createElement('div');
-  code.className = 'source-diff-code';
-  for (const line of diff) {
-    const row = document.createElement('div');
-    row.className = `source-diff-line ${line.kind}`;
+function buildStructuredComparison(before: string, after: string): StructuredComparison {
+  const unified = buildLineDiff(before, after, { equivalent: tableLinesEquivalent });
+  const sideBySide = buildSideBySideDiff(before, after, { equivalent: tableLinesEquivalent });
+  const sectionIds: string[] = [];
+  const markSections = <T extends { kind: string }>(rows: T[], prefix: string): (T & { id: string; changed: boolean; section: number | null })[] => {
+    let section = -1;
+    let inChange = false;
+    return rows.map((row, index) => {
+      const changed = row.kind === 'added' || row.kind === 'removed' || row.kind === 'changed';
+      if (changed && !inChange) {
+        section++;
+        sectionIds[section] = `change-${section + 1}`;
+      }
+      inChange = changed;
+      return { ...row, id: `${prefix}-${index}`, changed, section: changed ? section : null };
+    });
+  };
+  return {
+    unified: markSections(unified, 'unified'),
+    sideBySide: markSections(sideBySide, 'side'),
+    sectionIds,
+  };
+}
+
+function appendUnifiedRow(container: HTMLElement, line: StructuredUnifiedRow, oldLine: number | null, newLine: number | null): void {
+  const row = document.createElement('div');
+  row.className = `source-diff-line ${line.kind}`;
+  row.dataset.rowId = line.id;
+  if (line.section !== null) row.dataset.sectionId = `change-${line.section + 1}`;
+  const marker = document.createElement('span');
+  marker.className = 'source-diff-marker';
+  marker.textContent = line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : line.kind === 'normalized' ? '·' : ' ';
+  marker.setAttribute('aria-hidden', 'true');
+  const oldNumber = document.createElement('span');
+  oldNumber.className = 'source-diff-number';
+  oldNumber.textContent = oldLine === null ? '' : String(oldLine);
+  const newNumber = document.createElement('span');
+  newNumber.className = 'source-diff-number';
+  newNumber.textContent = newLine === null ? '' : String(newLine);
+  const text = document.createElement('code');
+  text.textContent = line.text || ' ';
+  row.append(marker, oldNumber, newNumber, text);
+  container.appendChild(row);
+}
+
+function appendUnifiedRows(
+  container: HTMLElement,
+  diff: StructuredUnifiedRow[],
+  filter: ComparisonFilter,
+  expandedContext: Set<string>,
+  showUnchanged: boolean,
+  onContextChange: (groupId: string, expanded: boolean) => void,
+): void {
+  let oldLine = 1;
+  let newLine = 1;
+  let index = 0;
+  while (index < diff.length) {
+    if ((filter === 'diff' && !diff[index].changed) || (filter === 'same' && diff[index].changed)) {
+      if (diff[index].kind === 'context' || diff[index].kind === 'normalized') oldLine++, newLine++;
+      else if (diff[index].kind === 'removed') oldLine++;
+      else newLine++;
+      index++;
+      continue;
+    }
+    if (diff[index].kind === 'context' || diff[index].kind === 'normalized') {
+      const start = index;
+      while (index < diff.length && (diff[index].kind === 'context' || diff[index].kind === 'normalized')) index++;
+      const group = diff.slice(start, index);
+      const render = document.createElement('div');
+      const groupId = `context-${group[0].id}-${group[group.length - 1].id}`;
+      const groupOldLine = oldLine;
+      const groupNewLine = newLine;
+      const renderGroup = () => group.forEach((line, offset) => {
+        appendUnifiedRow(render, line, groupOldLine + offset, groupNewLine + offset);
+      });
+      oldLine += group.length;
+      newLine += group.length;
+      const expanded = showUnchanged || expandedContext.has(groupId);
+      if (filter === 'all' && group.length > 4 && !expanded) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'source-diff-collapse';
+        button.textContent = `Show ${group.length} unchanged lines`;
+        button.dataset.contextId = groupId;
+        button.addEventListener('click', () => { onContextChange(groupId, true); });
+        container.appendChild(button);
+      } else {
+        renderGroup();
+        if (filter === 'all' && group.length > 4) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'source-diff-collapse';
+          button.textContent = `Hide ${group.length} unchanged lines`;
+          button.dataset.contextId = groupId;
+          button.addEventListener('click', () => { onContextChange(groupId, false); });
+          render.appendChild(button);
+        }
+        container.appendChild(render);
+      }
+      continue;
+    }
+    const line = diff[index++];
+    if (line.kind === 'removed') appendUnifiedRow(container, line, oldLine++, null);
+    else appendUnifiedRow(container, line, null, newLine++);
+  }
+}
+
+function appendSideBySideRow(container: HTMLElement, line: StructuredSideRow): void {
+  const row = document.createElement('div');
+  row.className = `side-diff-line ${line.kind}`;
+  row.dataset.rowId = line.id;
+  if (line.section !== null) row.dataset.sectionId = `change-${line.section + 1}`;
+  const sides = [line.left, line.right];
+  sides.forEach((side, index) => {
+    const pane = document.createElement('div');
+    pane.className = 'side-diff-pane';
     const marker = document.createElement('span');
-    marker.className = 'source-diff-marker';
-    marker.textContent = line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' ';
-    marker.setAttribute('aria-hidden', 'true');
+    marker.className = 'side-diff-marker';
+    marker.textContent = line.kind === 'changed' ? (index === 0 ? '−' : '+')
+      : line.kind === 'removed' && index === 0 ? '−'
+        : line.kind === 'added' && index === 1 ? '+' : ' ';
+    marker.setAttribute('aria-label', marker.textContent === '+' ? 'Added line' : marker.textContent === '−' ? 'Removed line' : 'Unchanged line');
+    const number = document.createElement('span');
+    number.className = 'side-diff-number';
+    number.textContent = side ? String(side.line) : '';
     const text = document.createElement('code');
-    text.textContent = line.text || ' ';
-    row.append(marker, text);
-    code.appendChild(row);
+    text.textContent = side?.text || ' ';
+    pane.append(marker, number, text);
+    row.appendChild(pane);
+  });
+  container.appendChild(row);
+}
+
+function appendSideBySideRows(
+  container: HTMLElement,
+  rows: StructuredSideRow[],
+  filter: ComparisonFilter,
+  expandedContext: Set<string>,
+  showUnchanged: boolean,
+  onContextChange: (groupId: string, expanded: boolean) => void,
+): void {
+  let index = 0;
+  while (index < rows.length) {
+    if ((filter === 'diff' && !rows[index].changed) || (filter === 'same' && rows[index].changed)) {
+      index++;
+      continue;
+    }
+    if (rows[index].kind === 'context' || rows[index].kind === 'normalized') {
+      const start = index;
+      while (index < rows.length && (rows[index].kind === 'context' || rows[index].kind === 'normalized')) index++;
+      const group = rows.slice(start, index);
+      const render = document.createElement('div');
+      const renderGroup = () => group.forEach((line) => appendSideBySideRow(render, line));
+      const groupId = `context-${group[0].id}-${group[group.length - 1].id}`;
+      const expanded = showUnchanged || expandedContext.has(groupId);
+      if (filter === 'all' && group.length > 4 && !expanded) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'source-diff-collapse';
+        button.textContent = `Show ${group.length} unchanged lines`;
+        button.dataset.contextId = groupId;
+        button.addEventListener('click', () => { onContextChange(groupId, true); });
+        container.appendChild(button);
+      } else {
+        renderGroup();
+        if (filter === 'all' && group.length > 4) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'source-diff-collapse';
+          button.textContent = `Hide ${group.length} unchanged lines`;
+          button.dataset.contextId = groupId;
+          button.addEventListener('click', () => { onContextChange(groupId, false); });
+          render.appendChild(button);
+        }
+        container.appendChild(render);
+      }
+      continue;
+    }
+    appendSideBySideRow(container, rows[index++]);
   }
-  if (!diff.length) {
-    const row = document.createElement('div');
-    row.className = 'source-diff-line context';
-    row.textContent = ' '; // Keep an empty document review surface visible.
-    code.appendChild(row);
-  }
-  body.appendChild(code);
+}
+
+function buildComparisonBody(before: string, after: string): HTMLElement {
+  const body = document.createElement('div');
+  body.className = 'comparison-body';
+  const structured = buildStructuredComparison(before, after);
+  settings.comparisonSplit = Math.max(.3, Math.min(.7, Number(settings.comparisonSplit) || .5));
+  const diff = structured.unified;
+  const automatic = settings.comparisonMode === 'auto';
+  let mode: ComparisonMode = automatic && comparisonIsLarge(before, after, diff) ? 'side-by-side'
+    : settings.comparisonMode === 'side-by-side' ? 'side-by-side' : 'unified';
+  let showUnchanged = false;
+  const expandedContext = new Set<string>();
+  const summary = document.createElement('p');
+  summary.className = 'muted-note comparison-summary';
+  summary.textContent = comparisonSummary(diff) + (automatic && mode === 'side-by-side' ? ' · Side-by-side selected for this larger change.' : '');
+  body.appendChild(summary);
+  const controls = document.createElement('div');
+  controls.className = 'comparison-controls';
+  const filterControls = document.createElement('div');
+  filterControls.className = 'comparison-filter';
+  let filter: ComparisonFilter = 'all';
+  let activeSection = 0;
+  const filterButtons: HTMLButtonElement[] = [];
+  const addFilter = (value: ComparisonFilter, label: string) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn small ghost';
+    button.textContent = label;
+    button.addEventListener('click', () => { filter = value; activeSection = 0; render(); });
+    filterButtons.push(button);
+    filterControls.appendChild(button);
+  };
+  addFilter('all', 'All');
+  addFilter('diff', 'Diff');
+  addFilter('same', 'Same');
+  controls.appendChild(filterControls);
+  const unchangedToggle = document.createElement('button');
+  unchangedToggle.type = 'button';
+  unchangedToggle.className = 'btn small ghost';
+  unchangedToggle.textContent = 'Show unchanged';
+  unchangedToggle.title = 'Show or hide unchanged context blocks';
+  unchangedToggle.addEventListener('click', () => {
+    showUnchanged = !showUnchanged;
+    if (!showUnchanged) expandedContext.clear();
+    render();
+  });
+  controls.appendChild(unchangedToggle);
+  const toggle = (value: ComparisonMode, label: string) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn small ghost';
+    button.textContent = label;
+    button.addEventListener('click', () => {
+      mode = value;
+      settings.comparisonMode = value;
+      saveSettings();
+      render();
+    });
+    controls.appendChild(button);
+    return button;
+  };
+  const unified = toggle('unified', 'Unified');
+  const side = toggle('side-by-side', 'Side by side');
+  const nav = document.createElement('span');
+  nav.className = 'comparison-nav';
+  const prev = document.createElement('button');
+  prev.type = 'button'; prev.className = 'btn small ghost'; prev.textContent = '↑'; prev.title = 'Previous diff'; prev.setAttribute('aria-label', 'Previous diff');
+  const next = document.createElement('button');
+  next.type = 'button'; next.className = 'btn small ghost'; next.textContent = '↓'; next.title = 'Next diff'; next.setAttribute('aria-label', 'Next diff');
+  const position = document.createElement('span');
+  position.className = 'muted-note';
+  nav.append(prev, next, position);
+  controls.appendChild(nav);
+  body.appendChild(controls);
+  const viewport = document.createElement('div');
+  body.appendChild(viewport);
+  let sideShell: HTMLElement | null = null;
+  const scrollToSection = () => {
+    const total = structured.sectionIds.length;
+    position.textContent = total ? `${Math.min(activeSection + 1, total)} of ${total} changes` : 'No changes';
+    prev.disabled = total === 0;
+    next.disabled = total === 0;
+    const target = viewport.querySelector<HTMLElement>(`[data-section-id="${structured.sectionIds[activeSection] ?? ''}"]`);
+    target?.scrollIntoView({ block: 'center' });
+  };
+  const adjustSplit = (event: PointerEvent) => {
+    if (!sideShell) return;
+    const rect = sideShell.getBoundingClientRect();
+    const value = Math.max(.3, Math.min(.7, (event.clientX - rect.left) / rect.width));
+    settings.comparisonSplit = value;
+    sideShell.style.setProperty('--side-split', `${value * 100}%`);
+  };
+  const render = () => {
+    filterButtons.forEach((button, index) => button.classList.toggle('active', ['all', 'diff', 'same'][index] === filter));
+    unchangedToggle.textContent = showUnchanged ? 'Hide unchanged' : 'Show unchanged';
+    unchangedToggle.classList.toggle('active', showUnchanged);
+    unchangedToggle.disabled = filter !== 'all';
+    unified.classList.toggle('active', mode === 'unified');
+    side.classList.toggle('active', mode === 'side-by-side');
+    viewport.innerHTML = '';
+    sideShell = null;
+    if (mode === 'unified') {
+      const code = document.createElement('div');
+      code.className = 'source-diff-code history-diff-code';
+      appendUnifiedRows(code, structured.unified, filter, expandedContext, showUnchanged, (groupId, expanded) => {
+        if (expanded) expandedContext.add(groupId);
+        else expandedContext.delete(groupId);
+        render();
+      });
+      viewport.appendChild(code);
+    } else {
+      const shell = document.createElement('div');
+      shell.className = 'side-diff-shell';
+      sideShell = shell;
+      shell.style.setProperty('--side-split', `${settings.comparisonSplit * 100}%`);
+      const heads = document.createElement('div');
+      heads.className = 'side-diff-head';
+      heads.innerHTML = '<strong>Selected snapshot</strong><strong>Current editor</strong>';
+      shell.appendChild(heads);
+      const code = document.createElement('div');
+      code.className = 'side-diff-code';
+      appendSideBySideRows(code, structured.sideBySide, filter, expandedContext, showUnchanged, (groupId, expanded) => {
+        if (expanded) expandedContext.add(groupId);
+        else expandedContext.delete(groupId);
+        render();
+      });
+      shell.appendChild(code);
+      const divider = document.createElement('button');
+      divider.type = 'button'; divider.className = 'side-diff-divider'; divider.title = 'Resize comparison panes'; divider.setAttribute('aria-label', 'Resize comparison panes');
+      divider.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        const move = (moveEvent: PointerEvent) => adjustSplit(moveEvent);
+        const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', stop, { once: true });
+      });
+      divider.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        settings.comparisonSplit = Math.max(.3, Math.min(.7, settings.comparisonSplit + (event.key === 'ArrowRight' ? .02 : -.02)));
+        shell.style.setProperty('--side-split', `${settings.comparisonSplit * 100}%`);
+      });
+      shell.appendChild(divider);
+      viewport.appendChild(shell);
+    }
+    scrollToSection();
+  };
+  prev.addEventListener('click', () => { if (structured.sectionIds.length) { activeSection = (activeSection - 1 + structured.sectionIds.length) % structured.sectionIds.length; render(); } });
+  next.addEventListener('click', () => { if (structured.sectionIds.length) { activeSection = (activeSection + 1) % structured.sectionIds.length; render(); } });
+  render();
   return body;
 }
 
+async function restoreSnapshot(snapshot: { content: string; ts: number }, historyHandle: { close: () => void }, reviewHandle: { close: () => void }): Promise<void> {
+  if (!currentDoc) return;
+  try {
+    await createRestoreCheckpoint(currentDoc.id, currentText, countWords(currentText));
+    reviewHandle.close();
+    historyHandle.close();
+    currentDoc = { ...currentDoc, content: snapshot.content };
+    await saveDoc(currentDoc);
+    docs = await listDocs();
+    await loadDoc(currentDoc);
+    toast(`Restored version from ${new Date(snapshot.ts).toLocaleTimeString()}.`, 'ok');
+  } catch (error) {
+    toast(`Could not restore this version: ${describeSaveError(error)}.`, 'err', 5200);
+  }
+}
+
 function openSnapshotDiff(snapshot: { content: string; label: string; ts: number }, historyHandle: { close: () => void }): void {
-  const body = buildDiffBody(currentText, snapshot.content, 'This snapshot matches the current document.');
+  const body = buildComparisonBody(snapshot.content, currentText);
   const keep = document.createElement('button');
   keep.type = 'button';
   keep.className = 'btn ghost';
@@ -412,16 +762,9 @@ function openSnapshotDiff(snapshot: { content: string; label: string; ts: number
   restore.type = 'button';
   restore.className = 'btn primary';
   restore.textContent = 'Restore this version';
-  const review = openModal({ title: 'Compare with snapshot', body, foot: [keep, restore], wide: true });
+  const review = openModal({ title: 'Compare with snapshot', body, foot: [keep, restore], wide: true, maximizable: true });
   keep.addEventListener('click', review.close);
-  restore.addEventListener('click', async () => {
-    if (!currentDoc) return;
-    await addSnapshot(currentDoc.id, 'pre-restore', currentText, countWords(currentText));
-    review.close();
-    historyHandle.close();
-    await loadDoc({ ...currentDoc, content: snapshot.content });
-    toast(`Restored version from ${new Date(snapshot.ts).toLocaleTimeString()}.`, 'ok');
-  });
+  restore.addEventListener('click', () => { void restoreSnapshot(snapshot, historyHandle, review); });
 }
 
 function openHistory(): void {
@@ -439,20 +782,7 @@ function openHistory(): void {
       const when = new Date(snap.ts);
       meta.innerHTML = `<div class="hi-label">${snap.label === 'auto' ? '⏱ Auto-snapshot' : '📌 ' + escapeHtml(snap.label)}</div>
         <div class="hi-time">${when.toLocaleString()} · ${snap.words.toLocaleString()} words · ${timeAgo(snap.ts)}</div>`;
-      const restore = document.createElement('button');
-      restore.className = 'btn small primary';
-      restore.textContent = 'Restore';
-      restore.addEventListener('click', async () => {
-        await addSnapshot(currentDoc!.id, 'pre-restore', currentText, countWords(currentText));
-        handle.close();
-        await loadDoc({ ...currentDoc!, content: snap.content });
-        toast(`Restored version from ${when.toLocaleTimeString()}.`, 'ok');
-      });
-      const diff = document.createElement('button');
-      diff.className = 'btn small ghost';
-      diff.textContent = 'Diff';
-      diff.title = 'Compare this snapshot with the current document';
-      diff.addEventListener('click', () => openSnapshotDiff(snap, handle));
+      const isCurrent = snap.content === currentText;
       const dl = document.createElement('button');
       dl.className = 'btn small ghost';
       dl.textContent = '.md';
@@ -463,7 +793,23 @@ function openHistory(): void {
         a.download = `${slug(currentDoc!.title)}-${when.toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`;
         a.click();
       });
-      item.append(meta, diff, dl, restore);
+      if (isCurrent) {
+        const badge = document.createElement('span');
+        badge.className = 'history-current';
+        badge.textContent = 'Current version';
+        item.append(meta, badge, dl);
+      } else {
+        const diff = document.createElement('button');
+        diff.className = 'btn small ghost';
+        diff.textContent = 'Diff';
+        diff.title = 'Compare this snapshot with the current document';
+        diff.addEventListener('click', () => openSnapshotDiff(snap, handle));
+        const restore = document.createElement('button');
+        restore.className = 'btn small primary';
+        restore.textContent = 'Restore';
+        restore.addEventListener('click', () => openSnapshotDiff(snap, handle));
+        item.append(meta, diff, dl, restore);
+      }
       wrap.appendChild(item);
     }
     const handle = openModal({ title: `History — ${currentDoc!.title}`, body: wrap });

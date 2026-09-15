@@ -22,7 +22,7 @@ npm run build    # → dist/  (upload this to Hostinger shared hosting — see D
 
 | **Smart images** | Paste/drop/upload → IndexedDB (`attachment:` refs) → exports inline them automatically |
 | Document library | IndexedDB (Dexie): quota-limited documents, search, rename/duplicate/delete, autosave, storage health, and persistent-storage protection request |
-| Version history | Ctrl+S named snapshots + 3-min auto snapshots only after content changes, Diff-before-restore review, restore/download from History |
+| Version history | Ctrl+S named snapshots + 3-min auto snapshots deduplicated against the newest persisted version, Current version action state, responsive unified/side-by-side Diff-before-restore review with wrapping, sticky options, draggable split, maximize, All/Diff/Same filtering, persistent unchanged-context expansion, and Prev/Next navigation |
 | Recovery | Library Tools dropup: portable `.markflow.zip` package with versioned manifest, relative assets, snapshots, settings, and legacy-compatible import; ordinary ZIP import for `.md` files remains supported |
 | Export | `.md` (auto-zips when images attached) · portable `.markflow.zip` package · standalone HTML (images embedded) · **PDF via browser print** (3 themes, selectable text, no watermark) |
 | Modes / themes | Source · Split (scroll-synced) · Preview — dark & light, PWA installable, works offline |
@@ -63,11 +63,11 @@ npm run build                        # production bundle
 npm run build && node test/smoke.mjs # browser suite; requires Node 20+ and a static server on :4173
 ```
 
-The pure suite currently covers 44 formatting, table, Markdown Confidence, source-diff, attachment, portable-package, export-artifact, generic ZIP-import, malformed-input, property-based, and save-recovery contracts. The browser suite remains a larger smoke script and requires Node 20+ for the installed Playwright version.
+The pure suite currently covers 48 formatting, table, Markdown Confidence, source-diff, snapshot-policy, attachment, portable-package, export-artifact, generic ZIP-import, malformed-input, property-based, and save-recovery contracts. The browser suite remains a larger smoke script and requires Node 20+ for the installed Playwright version.
 
 ## Status & next steps
 
-**Shipped (v0.1):** everything above, including semantic inline formatting, deterministic parser/table contract tests, read-only Markdown Confidence diagnostics, table source diff before Apply, and portable `.markflow.zip` packages with relative assets, snapshots, settings, and legacy-compatible import.
+**Shipped (v0.1):** everything above, including semantic inline formatting, deterministic parser/table contract tests, read-only Markdown Confidence diagnostics, table source diff before Apply, persisted snapshot deduplication, unified/side-by-side history comparison, and portable `.markflow.zip` packages with relative assets, snapshots, settings, and legacy-compatible import.
 **Next Horizon 1 slice:** one-click safe Confidence repairs backed by the source diff, then renderer/platform comparison. Remaining hardening includes the Node 20 browser matrix, service-worker rollout failure matrices, quota stress testing, and screen-reader/contrast/mobile audits.
 **Later:** target-platform preview modes, paste-rich-text→Markdown, AI sidebar (BYOK), GitHub sync, DOCX export, image resize handles, and code-live "Live" mode.
 **v2:** Yjs collaboration + comments, sharing links.

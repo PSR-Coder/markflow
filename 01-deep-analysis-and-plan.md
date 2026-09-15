@@ -320,6 +320,9 @@ Goal: own the “Markdown without anxiety” category.
    - table editor shows exact Markdown changes before commit
    - formatting actions inside the table editor are included in the same review, including multi-cell operations
    - version history offers a snapshot Diff action with explicit Keep current and Restore this version decisions
+   - version history supports unified and side-by-side comparison, automatic large-change selection, line numbers, synchronized scrolling, and collapsible unchanged context
+   - comparison panes wrap long Markdown lines, support responsive stacking, a draggable split, maximize/restore, sticky controls, All/Diff/Same filtering, Prev/Next diff navigation, and persistent unchanged-context expansion until explicitly hidden
+   - snapshots matching the live editor show as Current version with download only; ordinary and pre-restore snapshots deduplicate against the newest persisted content
    - the main source toolbar still uses CodeMirror undo/redo directly and does not open a separate diff modal
    - user can return to the grid without losing uncommitted work
 3. **Portable Document Package** — package schema 2 shipped

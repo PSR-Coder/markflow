@@ -28,6 +28,7 @@ export function openModal(opts: {
   body: HTMLElement | string;
   foot?: HTMLElement[];
   wide?: boolean;
+  maximizable?: boolean;
   onClose?: () => void;
 }): ModalHandle {
   const root = document.getElementById('modalRoot')!;
@@ -47,6 +48,20 @@ export function openModal(opts: {
   x.innerHTML = '&times;';
   x.setAttribute('aria-label', 'Close');
   head.append(h, x);
+  if (opts.maximizable) {
+    const maximize = document.createElement('button');
+    maximize.className = 'modal-x modal-maxbtn';
+    maximize.textContent = '⛶';
+    maximize.title = 'Maximize / restore dialog';
+    maximize.setAttribute('aria-label', 'Maximize or restore dialog');
+    maximize.addEventListener('click', () => {
+      const expanded = modal.classList.toggle('modal-max');
+      maximize.textContent = expanded ? '⛶' : '⛶';
+      maximize.title = expanded ? 'Restore dialog size' : 'Maximize dialog';
+      maximize.setAttribute('aria-label', expanded ? 'Restore dialog size' : 'Maximize dialog');
+    });
+    head.insertBefore(maximize, x);
+  }
 
   const body = document.createElement('div');
   body.className = 'modal-body';

@@ -46,13 +46,60 @@ await page.keyboard.press('Control+s');
 await page.waitForTimeout(350);
 await page.locator('#libraryToolsBtn').click();
 await page.getByRole('menuitem', { name: 'Version history' }).click();
-ok('version history exposes Diff beside download and restore', await page.locator('.history-item').count() >= 1
-  && await page.locator('.history-item .btn', { hasText: 'Diff' }).count() >= 1);
+ok('latest matching snapshot is marked current and has download only', await page.locator('.history-current').count() === 1
+  && await page.locator('.history-item .btn', { hasText: 'Diff' }).count() === 0
+  && await page.locator('.history-item .btn.primary', { hasText: 'Restore' }).count() === 0);
+await page.locator('.modal').last().locator('.modal-x').click();
+await page.locator('.cm-content').click();
+await page.keyboard.press('Control+End');
+await page.keyboard.type('\n\nHistory diff unsaved change');
+await page.waitForTimeout(180);
+await page.locator('#libraryToolsBtn').click();
+await page.getByRole('menuitem', { name: 'Version history' }).click();
+ok('older snapshot exposes Diff beside download and restore', await page.locator('.history-item .btn', { hasText: 'Diff' }).count() >= 1
+  && await page.locator('.history-item .btn.primary', { hasText: 'Restore' }).count() >= 1);
 await page.locator('.history-item .btn', { hasText: 'Diff' }).first().click();
 await page.waitForTimeout(180);
 ok('snapshot diff opens as a nested review modal', await page.locator('.modal').count() === 2
   && await page.locator('.source-diff-code').isVisible()
   && await page.locator('.source-diff-line.added, .source-diff-line.removed').count() > 0);
+ok('comparison exposes All, Diff, Same, and diff navigation controls', await page.locator('.modal').last().getByRole('button', { name: 'All' }).isVisible()
+  && await page.locator('.modal').last().getByRole('button', { name: 'Diff' }).isVisible()
+  && await page.locator('.modal').last().getByRole('button', { name: 'Same' }).isVisible()
+  && await page.locator('.modal').last().getByRole('button', { name: 'Previous diff' }).isVisible()
+  && await page.locator('.modal').last().getByRole('button', { name: 'Next diff' }).isVisible());
+await page.locator('.modal').last().getByRole('button', { name: 'Diff' }).click();
+ok('Diff filter hides unchanged rows', await page.locator('.source-diff-line.context, .source-diff-line.normalized').count() === 0);
+await page.locator('.modal').last().getByRole('button', { name: 'All' }).click();
+const compareModal = page.locator('.modal').last();
+const controlsBeforeScroll = await compareModal.locator('.comparison-controls').boundingBox();
+await compareModal.locator('.modal-body').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+await page.waitForTimeout(80);
+const controlsAfterScroll = await compareModal.locator('.comparison-controls').boundingBox();
+ok('comparison options stay pinned while the modal body scrolls', controlsBeforeScroll && controlsAfterScroll
+  && Math.abs(controlsAfterScroll.y - (await compareModal.locator('.modal-body').boundingBox()).y) <= 1);
+const unchangedToggle = compareModal.getByRole('button', { name: /Show unchanged|Hide unchanged/ });
+if (await unchangedToggle.innerText() === 'Show unchanged') await unchangedToggle.click();
+ok('showing unchanged context changes the toggle state', await compareModal.getByRole('button', { name: 'Hide unchanged' }).count() === 1);
+const comparisonBody = compareModal.locator('.modal-body');
+const stickyBefore = await compareModal.locator('.comparison-controls').boundingBox();
+await comparisonBody.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+await page.waitForTimeout(80);
+const stickyAfter = await compareModal.locator('.comparison-controls').boundingBox();
+const bodyRect = await comparisonBody.boundingBox();
+ok('comparison options stay visible while diff content scrolls', Boolean(stickyBefore && stickyAfter && bodyRect)
+  && Math.abs(stickyAfter.y - bodyRect.y) <= 1);
+await compareModal.getByRole('button', { name: 'Next diff' }).click();
+ok('expanded unchanged context survives diff navigation', await compareModal.getByRole('button', { name: 'Hide unchanged' }).count() === 1);
+await page.locator('.modal').last().getByRole('button', { name: 'Side by side' }).click();
+ok('comparison supports side-by-side mode with two labeled panes', await page.locator('.side-diff-shell').isVisible()
+  && (await page.locator('.side-diff-head strong').allTextContents()).join('|') === 'Selected snapshot|Current editor'
+  && await page.locator('.side-diff-divider').isVisible()
+  && await page.getByRole('button', { name: 'Maximize or restore dialog' }).isVisible());
+await page.getByRole('button', { name: 'Maximize or restore dialog' }).click();
+ok('comparison modal can maximize', await page.locator('.modal.modal-max').count() === 1);
+await page.getByRole('button', { name: 'Restore dialog size' }).click();
+await page.locator('.modal').last().getByRole('button', { name: 'Unified' }).click();
 await page.locator('.modal').last().getByRole('button', { name: 'Keep current' }).click();
 ok('ignoring the diff returns to version history', await page.locator('.modal').count() === 1
   && await page.locator('.history-item').count() >= 1);
@@ -768,6 +815,11 @@ await page.waitForTimeout(180);
 ok('source diff review opens before table changes are committed', await page.locator('.modal').count() === 2
   && await page.locator('.source-diff').isVisible()
   && await page.locator('.source-diff-line.added, .source-diff-line.removed').count() > 0);
+ok('table source diff keeps Markdown rows intact instead of wrapping every few characters', await page.locator('.table-source-diff-code').isVisible()
+  && await page.locator('.table-source-diff-code .source-diff-line').first().evaluate((el) => {
+    const code = el.querySelector('code');
+    return code && getComputedStyle(el).whiteSpace === 'pre' && code.getBoundingClientRect().width > 200;
+  }));
 await page.locator('.modal').last().locator('.btn.primary').click();
 await page.waitForTimeout(500);
 const srcR4 = await page.locator('.cm-content').innerText();

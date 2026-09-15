@@ -5,6 +5,12 @@ export interface DiffLine {
   text: string;
 }
 
+export interface SideBySideLine {
+  kind: DiffLineKind | 'changed';
+  left?: { line: number; text: string };
+  right?: { line: number; text: string };
+}
+
 export interface LineDiffOptions {
   /** Treat equivalent source representations as neutral context. */
   equivalent?: (before: string, after: string) => boolean;
@@ -44,4 +50,43 @@ export function buildLineDiff(before: string, after: string, options: LineDiffOp
     }
   }
   return diff;
+}
+
+/** Align a line diff into historical (left) and current (right) columns. */
+export function buildSideBySideDiff(before: string, after: string, options: LineDiffOptions = {}): SideBySideLine[] {
+  const oldLines = linesOf(before);
+  const newLines = linesOf(after);
+  const diff = buildLineDiff(before, after, options);
+  const rows: SideBySideLine[] = [];
+  let oldLine = 1;
+  let newLine = 1;
+  for (let index = 0; index < diff.length;) {
+    const line = diff[index];
+    if (line.kind === 'context' || line.kind === 'normalized') {
+      const leftText = oldLines[oldLine - 1] ?? line.text;
+      const rightText = newLines[newLine - 1] ?? line.text;
+      rows.push({
+        kind: line.kind,
+        left: { line: oldLine++, text: leftText },
+        right: { line: newLine++, text: rightText },
+      });
+      index++;
+      continue;
+    }
+    const removed: DiffLine[] = [];
+    const added: DiffLine[] = [];
+    while (index < diff.length && diff[index].kind === 'removed') removed.push(diff[index++]);
+    while (index < diff.length && diff[index].kind === 'added') added.push(diff[index++]);
+    const count = Math.max(removed.length, added.length);
+    for (let offset = 0; offset < count; offset++) {
+      const left = removed[offset];
+      const right = added[offset];
+      rows.push({
+        kind: left && right ? 'changed' : left ? 'removed' : 'added',
+        left: left ? { line: oldLine++, text: left.text } : undefined,
+        right: right ? { line: newLine++, text: right.text } : undefined,
+      });
+    }
+  }
+  return rows;
 }

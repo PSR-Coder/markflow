@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLineDiff } from '../src/core/textDiff';
+import { buildLineDiff, buildSideBySideDiff } from '../src/core/textDiff';
 import { tableLinesEquivalent } from '../src/core/tables';
 
 describe('source line diff', () => {
@@ -43,5 +43,12 @@ describe('source line diff', () => {
     expect(diff.filter((line) => line.kind === 'removed' || line.kind === 'added').map((line) => line.text))
       .toEqual(['| 1 | x |', '| changed 1 | x |']);
     expect(diff.filter((line) => line.kind === 'normalized')).toHaveLength(3);
+  });
+
+  it('aligns historical and current lines for side-by-side review', () => {
+    expect(buildSideBySideDiff('one\ntwo', 'one\nthree')).toEqual([
+      { kind: 'context', left: { line: 1, text: 'one' }, right: { line: 1, text: 'one' } },
+      { kind: 'changed', left: { line: 2, text: 'two' }, right: { line: 2, text: 'three' } },
+    ]);
   });
 });

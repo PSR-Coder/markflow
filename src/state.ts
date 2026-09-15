@@ -2,6 +2,7 @@
 
 export type ViewMode = 'source' | 'split' | 'preview';
 export type ThemeName = 'dark' | 'light';
+export type ComparisonMode = 'auto' | 'unified' | 'side-by-side';
 
 export interface Settings {
   theme: ThemeName;
@@ -9,6 +10,8 @@ export interface Settings {
   sidebarOpen: boolean;
   renderHtml: boolean;   // allow inline HTML in markdown (off = portable + safe)
   lineBreaks: boolean;   // render single newlines as <br> (off = GitHub/CommonMark parity)
+  comparisonMode: ComparisonMode;
+  comparisonSplit: number;
 }
 
 const KEY = 'mf-settings';
@@ -20,6 +23,8 @@ const defaults: Settings = {
   sidebarOpen: true,
   renderHtml: false,
   lineBreaks: true, // friendlier default for non-GitHub users; toggle for platform parity
+  comparisonMode: 'auto',
+  comparisonSplit: 0.5,
 };
 
 export const settings: Settings = (() => {

@@ -125,9 +125,28 @@ export async function duplicateDoc(doc: Doc): Promise<Doc> {
 
 // ---------- snapshots ----------
 
-export async function addSnapshot(docId: string, label: string, content: string, words: number): Promise<void> {
-  await db.snaps.add({ docId, label, content, words, ts: Date.now() });
-  // prune: keep newest SNAPSHOT_KEEP per doc
+export async function addSnapshot(docId: string, label: string, content: string, words: number): Promise<boolean> {
+  return addSnapshotIfChanged(docId, label, content, words);
+}
+
+/** Add a snapshot only when it differs from the newest persisted snapshot. */
+export async function addSnapshotIfChanged(docId: string, label: string, content: string, words: number): Promise<boolean> {
+  return db.transaction('rw', db.snaps, async () => {
+    const snapshots = await db.snaps.where('docId').equals(docId).sortBy('ts');
+    const latest = snapshots[snapshots.length - 1];
+    if (latest?.content === content) return false;
+    await db.snaps.add({ docId, label, content, words, ts: Date.now() });
+    await pruneSnapshots(docId);
+    return true;
+  });
+}
+
+/** Safety checkpoint used immediately before a confirmed restore. */
+export async function createRestoreCheckpoint(docId: string, content: string, words: number): Promise<boolean> {
+  return addSnapshotIfChanged(docId, 'pre-restore', content, words);
+}
+
+async function pruneSnapshots(docId: string): Promise<void> {
   const all = await db.snaps.where('docId').equals(docId).sortBy('ts');
   if (all.length > SNAPSHOT_KEEP) {
     const excess = all.slice(0, all.length - SNAPSHOT_KEEP);
